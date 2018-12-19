@@ -479,6 +479,12 @@ mlx5_glue_dv_create_flow_action_packet_reformat
 #endif
 }
 
+static struct ibv_context *
+mlx5_glue_dv_open_device(struct ibv_device *device,
+			 struct mlx5dv_context_attr *attr) {
+	return mlx5dv_open_device(device, attr);
+}
+
 alignas(RTE_CACHE_LINE_SIZE)
 const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.version = MLX5_GLUE_VERSION,
@@ -535,4 +541,5 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.dv_create_flow = mlx5_glue_dv_create_flow,
 	.dv_create_flow_action_packet_reformat =
 			mlx5_glue_dv_create_flow_action_packet_reformat,
+	.dv_open_device = mlx5_glue_dv_open_device,
 };

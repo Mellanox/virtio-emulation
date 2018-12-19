@@ -4,14 +4,46 @@
 
 #include <rte_bus_pci.h>
 #include <rte_errno.h>
+#include <rte_vdpa.h>
+#include <rte_malloc.h>
 
 #include "mlx5_glue.h"
 #include "mlx5_defs.h"
 #include "mlx5_utils.h"
+#include "mlx5.h"
 
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
 
+struct vdpa_priv {
+	int id; /* vDPA device id. */
+	struct ibv_context *ctx; /* Device context. */
+	struct rte_vdpa_dev_addr dev_addr;
+
+};
+struct vdpa_priv_list {
+	TAILQ_ENTRY(vdpa_priv_list) next;
+	struct vdpa_priv *priv;
+};
+
+TAILQ_HEAD(vdpa_priv_list_head, priv_list);
+static struct vdpa_priv_list_head priv_list =
+					TAILQ_HEAD_INITIALIZER(priv_list);
+static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
+	.get_queue_num = NULL,
+	.get_features = NULL,
+	.get_protocol_features = NULL,
+	.dev_conf = NULL,
+	.dev_close = NULL,
+	.set_vring_state = NULL,
+	.set_features = NULL,
+	.migration_done = NULL,
+	.get_vfio_group_fd = NULL,
+	.get_vfio_device_fd = NULL,
+	.get_notify_area = NULL,
+};
 /**
  * DPDK callback to register a PCI device.
  *
@@ -29,7 +61,86 @@ static int
 mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		    struct rte_pci_device *pci_dev __rte_unused)
 {
-	rte_errno = ENOENT;
+	struct ibv_device **ibv_list;
+	struct ibv_device *ibv_match = NULL;
+	struct mlx5dv_context_attr devx_attr = {
+		.flags = MLX5DV_CONTEXT_FLAGS_DEVX,
+		.comp_mask = 0,
+	};
+	struct vdpa_priv *priv = NULL;
+	struct vdpa_priv_list *priv_list_elem = NULL;
+	struct ibv_context *ctx;
+	int ret;
+
+	assert(pci_drv == &mlx5_vdpa_driver);
+	errno = 0;
+	ibv_list = mlx5_glue->get_device_list(&ret);
+	if (!ibv_list) {
+		rte_errno = errno ? errno : ENOSYS;
+		DRV_LOG(ERR, "cannot list devices, is ib_uverbs loaded?");
+		return -rte_errno;
+	}
+
+
+	while (ret-- > 0) {
+		struct rte_pci_addr pci_addr;
+
+		DRV_LOG(DEBUG, "checking device \"%s\"", ibv_list[ret]->name);
+		if (mlx5_ibv_device_to_pci_addr(ibv_list[ret], &pci_addr))
+			continue;
+		if (pci_dev->addr.domain != pci_addr.domain ||
+		    pci_dev->addr.bus != pci_addr.bus ||
+		    pci_dev->addr.devid != pci_addr.devid ||
+		    pci_dev->addr.function != pci_addr.function)
+			continue;
+		DRV_LOG(INFO, "PCI information matches for device \"%s\"",
+			ibv_list[ret]->name);
+		ibv_match = ibv_list[ret];
+		break;
+	}
+	if (!ibv_match) {
+		DRV_LOG(DEBUG, "No matching IB device for PCI slot "
+			"%" SCNx32 ":%" SCNx8 ":%" SCNx8 ".%" SCNx8 "\n",
+			pci_dev->addr.domain, pci_dev->addr.bus,
+			pci_dev->addr.devid, pci_dev->addr.function);
+		rte_errno = ENOENT;
+		goto error;
+	}
+	ctx = mlx5_glue->dv_open_device(ibv_match, &devx_attr);
+	if (!ctx) {
+		DRV_LOG(DEBUG, "Failed to open IB device \"%s\"", ibv_match->name);
+		rte_errno = errno ? errno : ENODEV;
+		goto error;
+	}
+	priv = rte_zmalloc("vDPA device private", sizeof(*priv),
+			   RTE_CACHE_LINE_SIZE);
+	priv_list_elem = rte_zmalloc("vDPA device priv list elem",
+				     sizeof(*priv_list_elem),
+				     RTE_CACHE_LINE_SIZE);
+	if (!priv || !priv_list_elem) {
+		DRV_LOG(DEBUG, "Unable to allocate memory for private structure");
+		rte_errno = rte_errno ? rte_errno : ENOMEM;
+		goto error;
+	}
+	priv->ctx = ctx;
+	priv->dev_addr.pci_addr = pci_dev->addr;
+	priv->dev_addr.type = PCI_ADDR;
+	priv_list_elem->priv = priv;
+	priv->id = rte_vdpa_register_device(&priv->dev_addr,
+					     &mlx5_vdpa_ops);
+	if (priv->id < 0) {
+		DRV_LOG(DEBUG, "Unable to regsiter vDPA device");
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_INSERT_TAIL(&priv_list, priv_list_elem, next);
+	pthread_mutex_unlock(&priv_list_lock);
+error:
+	if (priv)
+		rte_free(priv);
+	if (priv_list_elem)
+		rte_free(priv_list_elem);
 	return -rte_errno;
 }
 

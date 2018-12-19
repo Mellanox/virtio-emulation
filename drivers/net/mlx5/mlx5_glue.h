@@ -166,6 +166,8 @@ struct mlx5_glue {
 		 void *data,
 		 enum mlx5dv_flow_action_packet_reformat_type reformat_type,
 		 enum mlx5dv_flow_table_type ft_type);
+	struct ibv_context *(*dv_open_device)(struct ibv_device *device,
+					      struct mlx5dv_context_attr *attr);
 };
 
 const struct mlx5_glue *mlx5_glue;
