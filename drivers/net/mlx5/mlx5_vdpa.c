@@ -11,14 +11,20 @@
 #include "mlx5_defs.h"
 #include "mlx5_utils.h"
 #include "mlx5.h"
+#include "mlx5_prm.h"
 
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
+
+struct mlx5_vdpa_caps {
+	uint32_t dump_mkey;
+};
 
 struct vdpa_priv {
 	int id; /* vDPA device id. */
 	struct ibv_context *ctx; /* Device context. */
 	struct rte_vdpa_dev_addr dev_addr;
+	struct mlx5_vdpa_caps caps;
 
 };
 struct vdpa_priv_list {
@@ -44,6 +50,43 @@ static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_vfio_device_fd = NULL,
 	.get_notify_area = NULL,
 };
+
+static int
+mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
+{
+	uint32_t in[MLX5_ST_SZ_DW(query_hca_cap_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(query_hca_cap_out)] = {0};
+	uint32_t in_special[MLX5_ST_SZ_DW(query_special_contexts_in)] = {0};
+	uint32_t out_special[MLX5_ST_SZ_DW(query_special_contexts_out)] = {0};
+	uint8_t dump_mkey_reported = 0;
+
+	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
+	MLX5_SET(query_hca_cap_in, in, op_mod,
+			(MLX5_HCA_CAP_GENERAL << 1) |
+			(MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
+	if (mlx5dv_devx_general_cmd(priv->ctx, in, sizeof(in),
+				    out, sizeof(out)))
+		return -1;
+	dump_mkey_reported = MLX5_GET(cmd_hca_cap,
+				      MLX5_ADDR_OF(query_hca_cap_out, out,
+					           capability),
+				      dump_fill_mkey);
+	if (!dump_mkey_reported)
+		return -1;
+	/* Query the actual dump key. */
+	MLX5_SET(query_special_contexts_in, in_special, opcode,
+		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
+	if (mlx5dv_devx_general_cmd(priv->ctx, in_special, sizeof(in_special),
+				    out_special, sizeof(out_special)))
+		return -1;
+	priv->caps.dump_mkey = MLX5_GET(query_special_contexts_out,
+					out_special,
+					dump_fill_mkey);
+	DRV_LOG(DEBUG, "Virtio Caps:");
+	DRV_LOG(DEBUG, "	dump_mkey=0x%x", priv->caps.dump_mkey);
+	return 0;
+}
+
 /**
  * DPDK callback to register a PCI device.
  *
@@ -125,6 +168,11 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	priv->ctx = ctx;
 	priv->dev_addr.pci_addr = pci_dev->addr;
 	priv->dev_addr.type = PCI_ADDR;
+	if (mlx5_vdpa_query_virtio_caps(priv)) {
+		DRV_LOG(DEBUG, "Unable to query Virtio caps");
+		rte_errno = rte_errno ? rte_errno : EINVAL;
+		goto error;
+	}
 	priv_list_elem->priv = priv;
 	priv->id = rte_vdpa_register_device(&priv->dev_addr,
 					     &mlx5_vdpa_ops);
