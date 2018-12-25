@@ -53,8 +53,8 @@ struct vdpa_priv {
 	struct rte_vdpa_dev_addr dev_addr;
 	struct mlx5_vdpa_caps caps;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
-
 };
+
 struct vdpa_priv_list {
 	TAILQ_ENTRY(vdpa_priv_list) next;
 	struct vdpa_priv *priv;
@@ -194,6 +194,61 @@ mlx5_vdpa_get_vdpa_features(int did, uint64_t *features)
 	return 0;
 }
 
+#define MLX5_IB_MMAP_CMD_SHIFT 8
+#define MLX5_IB_MMAP_INDEX_MASK ((1 << MLX5_IB_MMAP_CMD_SHIFT) - 1)
+#define MLX5_IB_CMD_SIZE 8
+#define MLX5_IB_MMAP_VIRTIO_NOTIFY 9
+static inline void
+mlx5_vdpa_set_command(int command, uint16_t *offset)
+{
+	*offset |= (command << MLX5_IB_MMAP_CMD_SHIFT);
+	return;
+}
+
+static inline void
+mlx5_vdpa_set_ext_index(int index, uint16_t *offset)
+{
+	uint16_t shift = MLX5_IB_MMAP_CMD_SHIFT + MLX5_IB_CMD_SIZE;
+
+	*offset |= (((index >> MLX5_IB_MMAP_CMD_SHIFT) << shift) |
+		    (index & MLX5_IB_MMAP_INDEX_MASK));
+	return;
+}
+
+/*
+ * Currently there is a single offset for all of the queues doorbells.
+ */
+static inline uint16_t
+mlx5_vdpa_get_notify_offset(int qid __rte_unused)
+{
+	uint16_t offset = 0;
+
+	mlx5_vdpa_set_command(MLX5_IB_MMAP_VIRTIO_NOTIFY, &offset);
+	mlx5_vdpa_set_ext_index(0, &offset);
+	return offset;
+}
+
+static int
+mlx5_vdpa_report_notify_area(int vid __rte_unused, int qid , uint64_t *offset,
+			     uint64_t *size)
+{
+	long page_size = sysconf(_SC_PAGESIZE);
+
+	*offset = mlx5_vdpa_get_notify_offset(qid);
+	*offset = *offset * page_size;
+	/*
+	 * For now size can be only page size. smaller size does not fit naturally to the way KVM
+	 * subscribe translations into the EPT.
+	 *
+	 * This much fit BlueField1 solution. need to evaluate if we can bypass this issue in SW
+	 * to match ConnectX-6 implementation.
+	 */
+	*size = page_size;
+	DRV_LOG(DEBUG, "Notify offset is 0x%" PRIx64 " size is %" PRId64,
+		*offset, *size);
+	return 0;
+}
+
 static int
 mlx5_vdpa_dev_config(int vid)
 {
@@ -262,20 +317,6 @@ mlx5_vdpa_get_protocol_features(int did, uint64_t *features)
 	return 0;
 }
 
-static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
-	.get_queue_num = mlx5_vdpa_get_queue_num,
-	.get_features = mlx5_vdpa_get_vdpa_features,
-	.get_protocol_features = mlx5_vdpa_get_protocol_features,
-	.dev_conf = mlx5_vdpa_dev_config,
-	.dev_close = mlx5_vdpa_dev_close,
-	.set_vring_state = NULL,
-	.set_features = NULL,
-	.migration_done = NULL,
-	.get_vfio_group_fd = NULL,
-	.get_vfio_device_fd = NULL,
-	.get_notify_area = NULL,
-};
-
 static int
 mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 {
@@ -343,6 +384,20 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	DRV_LOG(DEBUG, "	features_bits=0x%" PRIx64, priv->caps.virtio_net_features);
 	return 0;
 }
+
+static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
+	.get_queue_num = mlx5_vdpa_get_queue_num,
+	.get_features = mlx5_vdpa_get_vdpa_features,
+	.get_protocol_features = mlx5_vdpa_get_protocol_features,
+	.dev_conf = mlx5_vdpa_dev_config,
+	.dev_close = mlx5_vdpa_dev_close,
+	.set_vring_state = NULL,
+	.set_features = NULL,
+	.migration_done = NULL,
+	.get_vfio_group_fd = NULL,
+	.get_vfio_device_fd = NULL,
+	.get_notify_area = mlx5_vdpa_report_notify_area,
+};
 
 /**
  * DPDK callback to register a PCI device.
