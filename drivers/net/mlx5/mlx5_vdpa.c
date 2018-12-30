@@ -6,6 +6,8 @@
 #include <rte_errno.h>
 #include <rte_vdpa.h>
 #include <rte_malloc.h>
+#include <unistd.h>
+#include <dlfcn.h>
 
 #include "mlx5_glue.h"
 #include "mlx5_defs.h"
