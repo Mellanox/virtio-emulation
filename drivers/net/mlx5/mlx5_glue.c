@@ -485,6 +485,14 @@ mlx5_glue_dv_open_device(struct ibv_device *device,
 	return mlx5dv_open_device(device, attr);
 }
 
+static int
+mlx5_glue_dv_devx_general_cmd(struct ibv_context *context,
+                              const void *in, size_t inlen,
+                              void *out, size_t outlen) {
+    return mlx5dv_devx_general_cmd(context, in, inlen, out, outlen);
+}
+
+
 alignas(RTE_CACHE_LINE_SIZE)
 const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.version = MLX5_GLUE_VERSION,
@@ -542,4 +550,5 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.dv_create_flow_action_packet_reformat =
 			mlx5_glue_dv_create_flow_action_packet_reformat,
 	.dv_open_device = mlx5_glue_dv_open_device,
+    .dv_devx_general_cmd = mlx5_glue_dv_devx_general_cmd,
 };
