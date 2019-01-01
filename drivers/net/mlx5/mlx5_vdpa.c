@@ -67,20 +67,26 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 			(MLX5_HCA_CAP_GENERAL << 1) |
 			(MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
 	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
-                                       out, sizeof(out)))
-		return -1;
+                                       out, sizeof(out))) {
+	    DRV_LOG(DEBUG, "Failed to Query Current HCA CAP section\n");
+	    return -1;
+	}
 	dump_mkey_reported = MLX5_GET(cmd_hca_cap,
 				      MLX5_ADDR_OF(query_hca_cap_out, out,
 					           capability),
 				      dump_fill_mkey);
-	if (!dump_mkey_reported)
-		return -1;
+	if (!dump_mkey_reported) {
+	    DRV_LOG(DEBUG, "dump_fill_mkey is not supported\n");
+	    return -1;
+	}
 	/* Query the actual dump key. */
 	MLX5_SET(query_special_contexts_in, in_special, opcode,
 		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
 	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in_special, sizeof(in_special),
-                                       out_special, sizeof(out_special)))
+                                       out_special, sizeof(out_special))) {
+	    DRV_LOG(DEBUG, "Failed to Query Special Contexts\n");
 		return -1;
+	}
 	priv->caps.dump_mkey = MLX5_GET(query_special_contexts_out,
 					out_special,
 					dump_fill_mkey);
