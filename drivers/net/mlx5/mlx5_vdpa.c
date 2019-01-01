@@ -186,6 +186,8 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	pthread_mutex_lock(&priv_list_lock);
 	TAILQ_INSERT_TAIL(&priv_list, priv_list_elem, next);
 	pthread_mutex_unlock(&priv_list_lock);
+	return 0;
+
 error:
 	if (priv)
 		rte_free(priv);
