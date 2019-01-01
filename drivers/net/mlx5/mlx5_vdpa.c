@@ -15,11 +15,15 @@
 #include "mlx5.h"
 #include "mlx5_prm.h"
 
+/** Driver Static values in the absence of device VIRTIO emulation support */
+#define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
+
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
 
 struct mlx5_vdpa_caps {
 	uint32_t dump_mkey;
+	uint16_t max_num_virtqs;
 };
 
 struct vdpa_priv {
@@ -39,8 +43,41 @@ static struct vdpa_priv_list_head priv_list =
 					TAILQ_HEAD_INITIALIZER(priv_list);
 static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static struct vdpa_priv_list *
+find_priv_resource_by_did(int did)
+{
+    int found = 0;
+    struct vdpa_priv_list *list;
+
+    pthread_mutex_lock(&priv_list_lock);
+    TAILQ_FOREACH(list, &priv_list, next) {
+        if (did == list->priv->id) {
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&priv_list_lock);
+    if (!found)
+        return NULL;
+    return list;
+}
+
+static int
+mlx5_vdpa_get_queue_num(int did, uint32_t *queue_num)
+{
+    struct vdpa_priv_list *list_elem;
+
+    list_elem = find_priv_resource_by_did(did);
+    if (list_elem == NULL) {
+        DRV_LOG(ERR, "Invalid device id: %d", did);
+        return -1;
+    }
+    *queue_num = list_elem->priv->caps.max_num_virtqs;
+    return 0;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
-	.get_queue_num = NULL,
+	.get_queue_num = mlx5_vdpa_get_queue_num,
 	.get_features = NULL,
 	.get_protocol_features = NULL,
 	.dev_conf = NULL,
@@ -90,8 +127,13 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	priv->caps.dump_mkey = MLX5_GET(query_special_contexts_out,
 					out_special,
 					dump_fill_mkey);
+	/*
+	 * TODO (idos): Take from QUERY HCA CAP Device Emulation Capabilities.
+	 */
+	priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
 	DRV_LOG(DEBUG, "Virtio Caps:");
-	DRV_LOG(DEBUG, "	dump_mkey=0x%x", priv->caps.dump_mkey);
+	DRV_LOG(DEBUG, "	dump_mkey=0x%x ", priv->caps.dump_mkey);
+	DRV_LOG(DEBUG, "	max_num_virtqs=0x%x ", priv->caps.max_num_virtqs);
 	return 0;
 }
 
