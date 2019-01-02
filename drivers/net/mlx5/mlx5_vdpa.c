@@ -6,16 +6,27 @@
 #include <sys/mman.h>
 #include <sys/epoll.h>
 
+#include <unistd.h>
+#include <dlfcn.h>
 #include <rte_bus_pci.h>
 #include <rte_errno.h>
 #include <rte_vdpa.h>
 #include <rte_malloc.h>
+#include <rte_common.h>
 
 #include "mlx5_glue.h"
 #include "mlx5_defs.h"
 #include "mlx5_utils.h"
 #include "mlx5.h"
 #include "mlx5_prm.h"
+
+#ifndef NOMINMAX
+#ifndef max
+#define max(a, b)            (((a) > (b)) ? (a) : (b))
+#endif
+#endif  /* NOMINMAX */
+
+#define MKEY_VARIANT_PART 0x50
 
 /** Driver Static values in the absence of device VIRTIO emulation support */
 #define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
@@ -50,6 +61,39 @@ struct mlx5_vdpa_relay_thread {
 	void      *notify_base; /* Notify base address. */
 };
 
+struct mlx5_devx_mkey {
+	void		*obj;
+	uint32_t	key;
+};
+
+struct mlx5_devx_mkey_attr {
+	uint64_t        addr;
+	uint64_t        size;
+	uint32_t        pas_id;
+	uint32_t        pd;
+	uint32_t        log_entity_size;
+	uint32_t        translations_octword_size;
+};
+
+struct mlx5_klm {
+	uint32_t byte_count;
+	uint32_t mkey;
+	uint64_t address;
+};
+
+struct mlx5_vdpa_query_mr {
+	void			*addr;
+	uint64_t		length;
+	struct mlx5dv_devx_umem *umem;
+	struct mlx5_devx_mkey   *mkey;
+	int			is_indirect;
+};
+
+struct mlx5_vdpa_query_mr_list {
+	SLIST_ENTRY(mlx5_vdpa_query_mr_list) next;
+	struct mlx5_vdpa_query_mr *vdpa_query_mr;
+};
+
 struct vdpa_priv {
 	int                           id; /* vDPA device id. */
 	int                           vid; /* virtio_net driver id */
@@ -62,6 +106,7 @@ struct vdpa_priv {
 	struct mlx5_vdpa_caps         caps;
 	struct mlx5_vdpa_relay_thread relay;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
+	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr_list) mr_list;
 };
 
 struct vdpa_priv_list {
@@ -161,6 +206,121 @@ static int mlx5_vdpa_release_rx(struct vdpa_priv *priv)
 		}
 	}
 	return 0;
+}
+
+static
+struct mlx5_devx_mkey *mlx5_vdpa_create_mkey(struct ibv_context *ctx,
+					struct mlx5_devx_mkey_attr *mkey_attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_mkey_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_mkey_out)] = {0};
+	uint32_t status;
+	void *mkc;
+	struct mlx5_devx_mkey *mkey = NULL;
+	int translations_oct_size = ((((mkey_attr->size + 4095) / 4096) + 1) / 2);
+
+	mkey = rte_zmalloc("mkey", sizeof(*mkey), RTE_CACHE_LINE_SIZE);
+	MLX5_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
+	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	MLX5_SET(mkc, mkc, lw, 0x1);
+	MLX5_SET(mkc, mkc, lr, 0x1);
+	MLX5_SET(mkc, mkc, rw, 0x1);
+	MLX5_SET(mkc, mkc, rr, 0x1);
+	MLX5_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_MTT);
+	MLX5_SET(mkc, mkc, qpn, 0xffffff);
+	MLX5_SET(mkc, mkc, length64, 0x0);
+	MLX5_SET(mkc, mkc, pd, mkey_attr->pd);
+	MLX5_SET(mkc, mkc, mkey_7_0, MKEY_VARIANT_PART);//FIXME: should be dynamic
+	MLX5_SET(mkc, mkc, translations_octword_size,translations_oct_size);
+	MLX5_SET(create_mkey_in, in, translations_octword_actual_size,
+		translations_oct_size);
+	MLX5_SET(create_mkey_in, in, pg_access, 1);
+	MLX5_SET64(mkc, mkc, start_addr, mkey_attr->addr);
+	MLX5_SET64(mkc, mkc, len, mkey_attr->size);
+	MLX5_SET(mkc, mkc, log_page_size, 12);
+	MLX5_SET(create_mkey_in, in, mkey_umem_id, mkey_attr->pas_id);
+
+	mkey->obj = mlx5_glue->dv_devx_obj_create(ctx, in, sizeof(in), out,
+					   sizeof(out));
+	if (!mkey->obj) {
+		DRV_LOG(ERR, "Can't create mkey error %s", strerror(errno));
+		goto error;
+	}
+	status = MLX5_GET(create_mkey_out, out, status);
+	mkey->key = MLX5_GET(create_mkey_out, out, mkey_index);
+	mkey->key = (mkey->key << 8) | MKEY_VARIANT_PART;
+	DRV_LOG(DEBUG, "create mkey status %d mkey value %d",
+		status, (mkey->key));
+	if (status)
+		goto error;
+	return mkey;
+error:
+	if (mkey)
+		rte_free(mkey);
+	return NULL;
+}
+
+static
+struct mlx5_devx_mkey *mlx5_create_indirect_mkey(struct ibv_context *ctx,
+					struct mlx5_devx_mkey_attr *mkey_attr,
+					struct mlx5_klm *klm_array, int num_klm)
+{
+	int translations_oct_size = (((num_klm / 4) + (num_klm % 4)) * 4);
+	uint32_t in_size = MLX5_ST_SZ_DB(create_mkey_in) +
+				translations_oct_size * MLX5_ST_SZ_DB(klm);
+	uint32_t *in = rte_zmalloc("in", in_size, 64);
+	uint32_t out[MLX5_ST_SZ_DW(create_mkey_out)] = {0};
+	uint32_t status;
+	void *mkc;
+	struct mlx5_devx_mkey *mkey = NULL;
+	uint8_t *klm = (uint8_t *)MLX5_ADDR_OF(create_mkey_in, in, klm_pas_mtt);
+
+	mkey = rte_zmalloc("mkey", sizeof(*mkey), RTE_CACHE_LINE_SIZE);
+	MLX5_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
+	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	MLX5_SET(mkc, mkc, lw, 0x1);
+	MLX5_SET(mkc, mkc, lr, 0x1);
+	MLX5_SET(mkc, mkc, rw, 0x1);
+	MLX5_SET(mkc, mkc, rr, 0x1);
+	MLX5_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_KSM);
+	MLX5_SET(mkc, mkc, qpn, 0xffffff);
+	MLX5_SET(mkc, mkc, length64, 0x0);
+	MLX5_SET(mkc, mkc, pd, mkey_attr->pd);
+	MLX5_SET(mkc, mkc, mkey_7_0, MKEY_VARIANT_PART);//FIXME: should be dynamic
+	MLX5_SET(mkc, mkc, translations_octword_size, translations_oct_size);
+	MLX5_SET(create_mkey_in, in,
+		translations_octword_actual_size, translations_oct_size);
+	MLX5_SET(create_mkey_in, in, pg_access, 0);
+	MLX5_SET64(mkc, mkc, start_addr, mkey_attr->addr);
+	MLX5_SET64(mkc, mkc, len, mkey_attr->size);
+	MLX5_SET(mkc, mkc, log_page_size, max(mkey_attr->log_entity_size, 12));
+	for (int i = 0; i < num_klm; i++) {
+		MLX5_SET(klm, klm, mkey, klm_array[i].mkey);
+		MLX5_SET64(klm, klm, address, klm_array[i].address);
+		klm += MLX5_ST_SZ_DB(klm);
+	}
+	for (int i = num_klm; i < translations_oct_size; i++) {
+		MLX5_SET(klm, klm, mkey, 0x0);
+		MLX5_SET64(klm, klm, address, 0x0);
+		klm += MLX5_ST_SZ_DB(klm);
+	}
+	mkey->obj = mlx5_glue->dv_devx_obj_create(ctx, in, in_size, out,
+						  sizeof(out));
+	if (!mkey->obj) {
+		DRV_LOG(ERR, "Can't create mkey error %s", strerror(errno));
+		goto error;
+	}
+	status = MLX5_GET(create_mkey_out, out, status);
+	mkey->key = MLX5_GET(create_mkey_out, out, mkey_index);
+	mkey->key = (mkey->key << 8) | MKEY_VARIANT_PART;
+	if (status)
+		return NULL;
+
+	return mkey;
+error:
+	if (mkey)
+		rte_free(mkey);
+	return NULL;
 }
 
 static struct vdpa_priv_list *
@@ -360,6 +520,155 @@ mlx5_vdpa_setup_notify_relay(struct vdpa_priv *priv)
 	}
 	return 0;
 }
+static int
+mlx5_vdpa_dma_map(struct vdpa_priv *priv)
+{
+	uint32_t i;
+	int ret;
+	struct rte_vhost_memory *mem = NULL;
+	struct mlx5_devx_mkey_attr mkey_attr;
+	static int klm_index;
+	struct mlx5_vdpa_query_mr *entry = NULL;
+	struct mlx5_vdpa_query_mr_list *list_elem = NULL;
+	struct rte_vhost_mem_region *reg = NULL;
+	/*TODO(liel): Working with KLM size of 1GB, change to GCD on empty_mr and region sizes*/
+	uint64_t klm_size = 1073741824;
+	uint64_t min_size = klm_size;
+	uint64_t mem_size;
+
+	ret = rte_vhost_get_mem_table(priv->id, &mem);
+	if (ret < 0) {
+		DRV_LOG(ERR, "failed to get VM memory layout.");
+		return -1;
+	}
+	for (i = 0; i < (mem->nregions); i++) {
+		if (min_size > mem->regions[i].size) {
+			DRV_LOG(ERR, "Min region size is smaller than KLM size.");
+			return -1;
+		}
+	}
+	klm_index = 0;
+	mem_size = (mem->regions[(mem->nregions - 1)].guest_phys_addr) +
+				(mem->regions[(mem->nregions - 1)].size) -
+				(mem->regions[0].guest_phys_addr);
+	struct mlx5_klm klm_array[mem_size / klm_size];
+	for (i = 0; i < mem->nregions; i++) {
+		reg = &mem->regions[i];
+		DRV_LOG(INFO, "region %u: HVA 0x%" PRIx64 ", "
+			"GPA 0x%" PRIx64 ", size 0x%" PRIx64 ".", i,
+			reg->host_user_addr, reg->guest_phys_addr, reg->size);
+		list_elem = rte_malloc(__func__, sizeof(*list_elem),
+				RTE_CACHE_LINE_SIZE);
+		entry =
+		    rte_malloc(__func__, sizeof(*entry), RTE_CACHE_LINE_SIZE);
+		if (!entry || !list_elem) {
+			DRV_LOG(ERR, "Unable to allocate memory");
+			goto error;
+		}
+		entry->umem = mlx5_glue->dv_devx_umem_reg(priv->ctx,
+					(void *)reg->host_user_addr, reg->size,
+					 IBV_ACCESS_LOCAL_WRITE);
+		if (!entry->umem) {
+			DRV_LOG(ERR, "Failed to register Umem using Devx.");
+			goto error;
+		}
+		mkey_attr.addr = (uintptr_t)(reg->guest_phys_addr);
+		mkey_attr.size = reg->size;
+		mkey_attr.pas_id = entry->umem->umem_id;
+		mkey_attr.pd = priv->pdn;
+		entry->mkey = mlx5_vdpa_create_mkey(priv->ctx, &mkey_attr);
+		if (!entry->mkey) {
+			DRV_LOG(ERR, "Unable to create Mkey");
+			goto error;
+		}
+		entry->addr = (void *)(reg->host_user_addr);
+		entry->length = reg->size;
+		entry->is_indirect = 0;
+		if (i > 0) {
+			uint64_t empty_region = reg->guest_phys_addr -
+					(mem->regions[i - 1].guest_phys_addr +
+					 mem->regions[i - 1].size);
+			if (empty_region > 0) {
+				uint64_t start_addr =
+					mem->regions[i - 1].guest_phys_addr +
+					mem->regions[i - 1].size;
+				for (uint64_t k = 0;
+				     k < empty_region; k += klm_size) {
+					klm_array[klm_index].mkey =
+						priv->caps.dump_mkey;
+					klm_array[klm_index].address =
+						start_addr + k;
+					klm_index++;
+				}
+			}
+		}
+		for (uint64_t k = 0; k < reg->size; k += klm_size) {
+			klm_array[klm_index].byte_count = 0;
+			klm_array[klm_index].mkey = (uint64_t)entry->mkey;
+			klm_array[klm_index].address = reg->guest_phys_addr + k;
+			klm_index++;
+		}
+		list_elem->vdpa_query_mr = entry;
+		SLIST_INSERT_HEAD(&priv->mr_list, list_elem, next);
+	}
+	mkey_attr.addr = (uintptr_t)(mem->regions[0].guest_phys_addr);
+	mkey_attr.size = mem_size;
+	mkey_attr.pd = priv->pdn;
+	mkey_attr.pas_id = 0;
+	mkey_attr.log_entity_size = rte_log2_u32(klm_size);
+	list_elem =
+		rte_malloc(__func__, sizeof(*list_elem), RTE_CACHE_LINE_SIZE);
+	entry = rte_malloc(__func__, sizeof(*entry), 0);
+	if (!entry || !list_elem) {
+		DRV_LOG(ERR, "Unable to allocate memory");
+		goto error;
+	}
+	entry->mkey = mlx5_create_indirect_mkey(priv->ctx,
+				&mkey_attr, klm_array, klm_index);
+	if (!entry->mkey) {
+		DRV_LOG(ERR, "Unable to create indirect Mkey");
+		goto error;
+	}
+	entry->is_indirect = 1;
+	list_elem->vdpa_query_mr = entry;
+	SLIST_INSERT_HEAD(&priv->mr_list, list_elem, next);
+	return 0;
+error:
+	if (list_elem)
+		free(list_elem);
+	if (entry)
+		free(entry);
+	return -1;
+}
+
+static int
+mlx5_vdpa_release_mr(struct vdpa_priv *priv)
+{
+	struct mlx5_vdpa_query_mr_list *entry;
+	struct mlx5_vdpa_query_mr_list *next;
+
+	entry = SLIST_FIRST(&priv->mr_list);
+	while (entry) {
+		next = SLIST_NEXT(entry, next);
+		if (mlx5_glue->
+			dv_devx_obj_destroy(entry->vdpa_query_mr->mkey->obj)) {
+			DRV_LOG(ERR, "Error when destoying Mkey objecy");
+			return -1;
+		}
+		rte_free(entry->vdpa_query_mr->mkey);
+		if (!entry->vdpa_query_mr->is_indirect) {
+			if (mlx5_glue->
+				dv_devx_umem_dereg(entry->vdpa_query_mr->umem)) {
+				DRV_LOG(ERR, "Error when desregistering Umem");
+				return -1;
+			}
+		}
+		rte_free(entry->vdpa_query_mr);
+		rte_free(entry);
+		entry = next;
+	};
+	return 0;
+}
 
 static int
 mlx5_vdpa_dev_config(int vid)
@@ -378,6 +687,10 @@ mlx5_vdpa_dev_config(int vid)
 	priv->vid = vid;
 	if (create_pd(priv)) {
 		DRV_LOG(ERR, "Error allocating PD");
+		return -1;
+	}
+	if (mlx5_vdpa_dma_map(priv)) {
+		DRV_LOG(ERR, "Error DMA mapping VM memory");
 		return -1;
 	}
 	if (mlx5_vdpa_setup_rx(priv)) {
@@ -423,13 +736,16 @@ mlx5_vdpa_dev_close(int vid)
 	}
 	priv = list_elem->priv;
 	mlx5_vdpa_unset_notify_relay(priv);
-	if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
-		DRV_LOG(ERR, "Error when DEALLOCATING PD");
-		return -1;
-	}
-	priv->pdn = 0;
 	if (mlx5_vdpa_release_rx(priv)) {
 		DRV_LOG(ERR, "Error in releasing RX resources");
+		return -1;
+	}
+	if (mlx5_vdpa_release_mr(priv)) {
+		DRV_LOG(ERR, "Error in unmapping MRs");
+		return -1;
+	}
+	if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
+		DRV_LOG(ERR, "Error when DEALLOCATING PD");
 		return -1;
 	}
 	rte_atomic32_set(&priv->dev_attached, 0);

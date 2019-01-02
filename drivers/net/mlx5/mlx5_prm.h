@@ -391,6 +391,14 @@ typedef uint8_t u8;
 				 (((_v) & __mlx5_mask(typ, fld)) << \
 				   __mlx5_dw_bit_off(typ, fld))); \
 	} while (0)
+#define __MLX5_SET64(typ, p, fld, v) do { \
+	assert(__mlx5_bit_sz(typ, fld) == 64); \
+	*((__be64 *)(p) + __mlx5_64_off(typ, fld)) = rte_cpu_to_be_64(v); \
+} while (0)
+#define MLX5_SET64(typ, p, fld, v) do { \
+	assert(__mlx5_bit_off(typ, fld) % 64 == 0); \
+	__MLX5_SET64(typ, p, fld, v); \
+} while (0)
 #define MLX5_GET16(typ, p, fld) \
 	((rte_be_to_cpu_16(*((__be16 *)(p) + \
 	  __mlx5_16_off(typ, fld))) >> __mlx5_16_bit_off(typ, fld)) & \
@@ -1017,6 +1025,7 @@ struct mlx5_ifc_create_virtq_in_bits {
 
 enum {
 	MLX5_CMD_OP_QUERY_HCA_CAP          = 0x100,
+	MLX5_CMD_OP_CREATE_MKEY            = 0x200,
 	MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS = 0x203,
 	MLX5_CMD_OP_ALLOC_PD               = 0x800,
 	MLX5_CMD_OP_CREATE_RQ              = 0x908,
@@ -1128,5 +1137,89 @@ mlx5_flow_mark_get(uint32_t val)
 	return val - 1;
 #endif
 }
+
+enum {
+	MLX5_MKC_ACCESS_MODE_PA    = 0x0,
+	MLX5_MKC_ACCESS_MODE_MTT   = 0x1,
+	MLX5_MKC_ACCESS_MODE_KLMS  = 0x2,
+	MLX5_MKC_ACCESS_MODE_KSM   = 0x3,
+	MLX5_MKC_ACCESS_MODE_MEMIC = 0x5,
+};
+
+struct mlx5_ifc_klm_bits {
+	u8         byte_count[0x20];
+	u8         mkey[0x20];
+	u8         address[0x40];
+};
+
+struct mlx5_ifc_mkc_bits {
+	u8         reserved_at_0[0x1];
+	u8         free[0x1];
+	u8         reserved_at_2[0x1];
+	u8         access_mode_4_2[0x3];
+	u8         reserved_at_6[0x7];
+	u8         relaxed_ordering_write[0x1];
+	u8         reserved_at_e[0x1];
+	u8         small_fence_on_rdma_read_response[0x1];
+	u8         umr_en[0x1];
+	u8         a[0x1];
+	u8         rw[0x1];
+	u8         rr[0x1];
+	u8         lw[0x1];
+	u8         lr[0x1];
+	u8         access_mode_1_0[0x2];
+	u8         reserved_at_18[0x8];
+	u8         qpn[0x18];
+	u8         mkey_7_0[0x8];
+	u8         reserved_at_40[0x20];
+	u8         length64[0x1];
+	u8         bsf_en[0x1];
+	u8         sync_umr[0x1];
+	u8         reserved_at_63[0x2];
+	u8         expected_sigerr_count[0x1];
+	u8         reserved_at_66[0x1];
+	u8         en_rinval[0x1];
+	u8         pd[0x18];
+	u8         start_addr[0x40];
+	u8         len[0x40];
+	u8         bsf_octword_size[0x20];
+	u8         reserved_at_120[0x80];
+	u8         translations_octword_size[0x20];
+	u8         reserved_at_1c0[0x1b];
+	u8         log_page_size[0x5];
+	u8         reserved_at_1e0[0x20];
+};
+
+struct mlx5_ifc_create_mkey_out_bits {
+	u8         status[0x8];
+	u8         reserved_at_8[0x18];
+	u8         syndrome[0x20];
+	u8         reserved_at_40[0x8];
+	u8         mkey_index[0x18];
+	u8         reserved_at_60[0x20];
+};
+
+struct mlx5_ifc_create_mkey_in_bits {
+	u8         opcode[0x10];
+	u8         reserved_at_10[0x10];
+	u8         reserved_at_20[0x10];
+	u8         op_mod[0x10];
+	u8         reserved_at_40[0x20];
+	u8         pg_access[0x1];
+	u8         reserved_at_61[0x1f];
+	struct mlx5_ifc_mkc_bits memory_key_mkey_entry;
+	u8         reserved_at_280[0x80];
+	u8         translations_octword_actual_size[0x20];
+	u8         mkey_umem_id[0x20];
+	u8         mkey_umem_offset[0x40];
+	u8         reserved_at_380[0x500];
+	struct mlx5_ifc_klm_bits klm_pas_mtt[0];
+};
+
+struct mlx5_klm {
+	uint32_t byte_count;
+	uint32_t mkey;
+	uint64_t address;
+};
 
 #endif /* RTE_PMD_MLX5_PRM_H_ */
