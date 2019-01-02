@@ -24,6 +24,7 @@ int mlx5_vdpa_logtype;
 struct mlx5_vdpa_caps {
 	uint32_t dump_mkey;
 	uint16_t max_num_virtqs;
+	uint64_t virtio_net_features;
 };
 
 struct vdpa_priv {
@@ -76,9 +77,23 @@ mlx5_vdpa_get_queue_num(int did, uint32_t *queue_num)
     return 0;
 }
 
+static int
+mlx5_vdpa_get_vdpa_features(int did, uint64_t *features)
+{
+	struct vdpa_priv_list *list_elem;
+
+	list_elem = find_priv_resource_by_did(did);
+	if (list_elem == NULL) {
+		DRV_LOG(ERR, "Invalid device id: %d", did);
+		return -1;
+	}
+	*features = list_elem->priv->caps.virtio_net_features;
+	return 0;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_queue_num = mlx5_vdpa_get_queue_num,
-	.get_features = NULL,
+	.get_features = mlx5_vdpa_get_vdpa_features,
 	.get_protocol_features = NULL,
 	.dev_conf = NULL,
 	.dev_close = NULL,
@@ -129,11 +144,14 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 					dump_fill_mkey);
 	/*
 	 * TODO (idos): Take from QUERY HCA CAP Device Emulation Capabilities.
+	 * For now only set protocol features support
 	 */
 	priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
+	priv->caps.virtio_net_features = (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
 	DRV_LOG(DEBUG, "Virtio Caps:");
 	DRV_LOG(DEBUG, "	dump_mkey=0x%x ", priv->caps.dump_mkey);
 	DRV_LOG(DEBUG, "	max_num_virtqs=0x%x ", priv->caps.max_num_virtqs);
+	DRV_LOG(DEBUG, "	features_bits=0x%" PRIx64, priv->caps.virtio_net_features);
 	return 0;
 }
 
