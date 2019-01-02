@@ -508,6 +508,18 @@ mlx5_glue_dv_devx_obj_destroy(struct mlx5dv_devx_obj *obj)
 	return mlx5dv_devx_obj_destroy(obj);
 }
 
+static struct mlx5dv_devx_umem *
+mlx5_glue_dv_devx_umem_reg(struct ibv_context *context, void *addr, size_t size,
+			   uint32_t access)
+{
+	return mlx5dv_devx_umem_reg(context, addr, size, access);
+}
+
+static int
+mlx5_glue_dv_devx_umem_dereg(struct mlx5dv_devx_umem *umem)
+{
+	return mlx5dv_devx_umem_dereg(umem);
+}
 
 alignas(RTE_CACHE_LINE_SIZE)
 const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
@@ -569,4 +581,6 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.dv_devx_general_cmd = mlx5_glue_dv_devx_general_cmd,
 	.dv_devx_obj_create = mlx5_glue_dv_devx_obj_create,
 	.dv_devx_obj_destroy = mlx5_glue_dv_devx_obj_destroy,
+	.dv_devx_umem_reg = mlx5_glue_dv_devx_umem_reg,
+	.dv_devx_umem_dereg = mlx5_glue_dv_devx_umem_dereg,
 };
