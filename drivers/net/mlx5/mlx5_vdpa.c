@@ -19,6 +19,14 @@
 #define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
 #define SPECIAL_CQ_FOR_VDPA               0
 
+#define MLX5_VDPA_FEATURES ((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
+			    (1ULL << VIRTIO_F_VERSION_1))
+
+#define MLX5_VDPA_PROTOCOL_FEATURES \
+			    ((1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
+			     (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
+			     (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER))
+
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
 
@@ -26,6 +34,7 @@ struct mlx5_vdpa_caps {
 	uint32_t dump_mkey;
 	uint16_t max_num_virtqs;
 	uint64_t virtio_net_features;
+	uint64_t virtio_protocol_features;
 };
 
 struct virtq_info {
@@ -238,10 +247,24 @@ mlx5_vdpa_dev_close(int vid)
     return 0;
 }
 
+static int
+mlx5_vdpa_get_protocol_features(int did, uint64_t *features)
+{
+	struct vdpa_priv_list *list_elem;
+
+	list_elem = find_priv_resource_by_did(did);
+	if (list_elem == NULL) {
+		DRV_LOG(ERR, "Invalid device id: %d", did);
+		return -1;
+	}
+	*features = list_elem->priv->caps.virtio_protocol_features;
+	return 0;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_queue_num = mlx5_vdpa_get_queue_num,
 	.get_features = mlx5_vdpa_get_vdpa_features,
-	.get_protocol_features = NULL,
+	.get_protocol_features = mlx5_vdpa_get_protocol_features,
 	.dev_conf = mlx5_vdpa_dev_config,
 	.dev_close = mlx5_vdpa_dev_close,
 	.set_vring_state = NULL,
@@ -311,7 +334,8 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 		priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
 	}
 	priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
-	priv->caps.virtio_net_features = (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
+	priv->caps.virtio_net_features = MLX5_VDPA_FEATURES;
+	priv->caps.virtio_protocol_features = MLX5_VDPA_PROTOCOL_FEATURES;
 	DRV_LOG(DEBUG, "Virtio Caps:");
 	DRV_LOG(DEBUG, "	dump_mkey=0x%x ", priv->caps.dump_mkey);
 	DRV_LOG(DEBUG, "	max_num_virtqs=0x%x ", priv->caps.max_num_virtqs);
