@@ -91,10 +91,19 @@ mlx5_vdpa_get_vdpa_features(int did, uint64_t *features)
 	return 0;
 }
 
+#define MLX5_VDPA_SUPPORTED_PROTOCOL_FEATURES (0)
+
+static int
+mlx5_vdpa_get_protocol_features(int did __rte_unused, uint64_t *features)
+{
+	*features = MLX5_VDPA_SUPPORTED_PROTOCOL_FEATURES;
+	return 0;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_queue_num = mlx5_vdpa_get_queue_num,
 	.get_features = mlx5_vdpa_get_vdpa_features,
-	.get_protocol_features = NULL,
+	.get_protocol_features = mlx5_vdpa_get_protocol_features,
 	.dev_conf = NULL,
 	.dev_close = NULL,
 	.set_vring_state = NULL,
