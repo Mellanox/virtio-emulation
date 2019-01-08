@@ -385,6 +385,24 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	return 0;
 }
 
+static int
+mlx5_vdpa_get_device_fd(int vid)
+{
+	int dev_id;
+	struct vdpa_priv_list *list;
+
+	dev_id = rte_vhost_get_vdpa_device_id(vid);
+	if (dev_id < 0)
+		goto error;
+	list = find_priv_resource_by_did(dev_id);
+	if (!list)
+		goto error;
+	return list->priv->ctx->cmd_fd;
+error:
+	DRV_LOG(DEBUG, "Invliad vDPA device id %d", vid);
+	return -1;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_queue_num = mlx5_vdpa_get_queue_num,
 	.get_features = mlx5_vdpa_get_vdpa_features,
@@ -395,7 +413,7 @@ static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.set_features = NULL,
 	.migration_done = NULL,
 	.get_vfio_group_fd = NULL,
-	.get_vfio_device_fd = NULL,
+	.get_vfio_device_fd = mlx5_vdpa_get_device_fd,
 	.get_notify_area = mlx5_vdpa_report_notify_area,
 };
 
