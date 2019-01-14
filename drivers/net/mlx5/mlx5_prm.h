@@ -816,8 +816,19 @@ struct mlx5_ifc_cmd_hca_cap_bits {
 	u8 reserved_at_61f[0x1e1];
 };
 
+struct mlx5_ifc_device_emulation_bits {
+	u8 nvme_offload_type_sqe[0x1];
+	u8 nvme_offload_type_doorbell_only[0x1];
+	u8 nvme_offload_type_command_capsule[0x1];
+	u8 log_max_nvme_offload_namespaces[0x5];
+	u8 reserved_at_8[0x28];
+	u8 registers_size[0x10];
+	u8 reserved_at_100[0x7c0];
+};
+
 union mlx5_ifc_hca_cap_union_bits {
 	struct mlx5_ifc_cmd_hca_cap_bits cmd_hca_cap;
+	struct mlx5_ifc_device_emulation_bits emulation_cap;
 	u8 reserved_at_0[0x8000];
 };
 
@@ -862,6 +873,7 @@ enum {
 
 enum {
 	MLX5_HCA_CAP_GENERAL = 0,
+	MLX5_HCA_CAP_DEVICE_EMULATION = 0x10,
 };
 
 enum {
