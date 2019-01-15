@@ -877,9 +877,48 @@ struct mlx5_ifc_query_special_contexts_in_bits {
 	u8 reserved_at_40[0x40];
 };
 
+struct mlx5_ifc_general_obj_in_cmd_hdr_bits {
+	u8 opcode[0x10];
+	u8 reserved_at_10[0x20];
+	u8 obj_type[0x10];
+	u8 obj_id[0x20];
+	u8 reserved_at_60[0x20];
+};
+
+struct mlx5_ifc_general_obj_out_cmd_hdr_bits {
+	u8 status[0x8];
+	u8 reserved_at_8[0x18];
+	u8 syndrome[0x20];
+	u8 obj_id[0x20];
+	u8 reserved_at_60[0x20];
+};
+
+struct mlx5_ifc_virtq_bits {
+	u8 reserved_at_0[0x84];
+	u8 queue_type[0x4];
+	u8 qnum[0x18];
+	u8 desc_addr[0x40];
+	u8 used_addr[0x40];
+	u8 available_addr[0x40];
+	u8 doorbell_stride_idx[0x10];
+	u8 queue_size[0x10];
+	u8 ctrl_mkey[0x20];
+	u8 data_mkey[0x20];
+	u8 reserved_at_1c0[0x640];
+};
+
+struct mlx5_ifc_create_virtq_in_bits {
+	struct mlx5_ifc_general_obj_in_cmd_hdr_bits hdr;
+	struct mlx5_ifc_virtq_bits virtq;
+};
+
 enum {
 	MLX5_CMD_OP_QUERY_HCA_CAP = 0x100,
 	MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS = 0x203,
+	MLX5_CMD_OP_CREATE_GENERAL_OBJECT = 0xa00,
+	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT = 0xa01,
+	MLX5_CMD_OP_QUERY_GENERAL_OBJECT = 0xa02,
+	MLX5_CMD_OP_DESTROY_GENERAL_OBJECT = 0xa03,
 };
 
 enum {
@@ -889,6 +928,14 @@ enum {
 
 enum {
 	MLX5_HCA_CAP_OPMOD_GET_CUR = 1,
+};
+
+enum {
+	MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ = (1ULL << 10),
+};
+
+enum {
+	MLX5_OBJ_TYPE_VIRTQ = 0x000a,
 };
 
 /* CQE format mask. */
