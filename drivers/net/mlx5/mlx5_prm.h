@@ -938,6 +938,11 @@ enum {
 	MLX5_OBJ_TYPE_VIRTQ = 0x000a,
 };
 
+enum {
+	MLX5_VIRTQ_OBJ_QUEUE_TYPE_RX = 0,
+	MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX = 1,
+};
+
 /* CQE format mask. */
 #define MLX5E_CQE_FORMAT_MASK 0xc
 
