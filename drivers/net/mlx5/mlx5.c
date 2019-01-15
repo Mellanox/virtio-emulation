@@ -1315,6 +1315,45 @@ mlx5_dev_spawn_data_cmp(const void *a, const void *b)
 	return si_a->port_name - si_b->port_name;
 }
 
+/* TODO:(idos) move this and from virtio_ethdev.c to a shared place */
+static int vdpa_check_handler(__rte_unused const char *key,
+		const char *value, __rte_unused void *opaque)
+{
+	if (strcmp(value, "1"))
+		return -1;
+
+	return 0;
+}
+
+static int
+vdpa_mode_selected(struct rte_devargs *devargs)
+{
+	struct rte_kvargs *kvlist;
+	const char *key = "vdpa";
+	int ret = 0;
+
+	if (devargs == NULL)
+		return 0;
+
+	kvlist = rte_kvargs_parse(devargs->args, NULL);
+	if (kvlist == NULL)
+		return 0;
+
+	if (!rte_kvargs_count(kvlist, key))
+		goto exit;
+
+	/* vdpa mode selected when there's a key-value pair: vdpa=1 */
+	if (rte_kvargs_process(kvlist, key,
+				vdpa_check_handler, NULL) < 0) {
+		goto exit;
+	}
+	ret = 1;
+
+exit:
+	rte_kvargs_free(kvlist);
+	return ret;
+}
+
 /**
  * DPDK callback to register a PCI device.
  *
@@ -1339,6 +1378,12 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	assert(pci_drv == &mlx5_driver);
 	errno = 0;
+
+	/* net/mlx5 pmd skips probe if device needs to work in vdpa mode
+	 * In favor for net/mlx5_vdpa which may use the same PCI device for it */
+	if (vdpa_mode_selected(pci_dev->device.devargs))
+		return 1;
+
 	ibv_list = mlx5_glue->get_device_list(&ret);
 	if (!ibv_list) {
 		rte_errno = errno ? errno : ENOSYS;
