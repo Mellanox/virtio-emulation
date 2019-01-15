@@ -363,11 +363,11 @@ typedef uint8_t u8;
 
 #define __mlx5_nullp(typ) ((struct mlx5_ifc_##typ##_bits *)0)
 #define __mlx5_bit_sz(typ, fld) sizeof(__mlx5_nullp(typ)->fld)
-#define __mlx5_bit_off(typ, fld) ((unsigned int)(unsigned long) \
-				  (&(__mlx5_nullp(typ)->fld)))
+#define __mlx5_bit_off(typ, fld) (offsetof(struct mlx5_ifc_##typ##_bits, fld))
 #define __mlx5_dw_bit_off(typ, fld) (32 - __mlx5_bit_sz(typ, fld) - \
 				    (__mlx5_bit_off(typ, fld) & 0x1f))
 #define __mlx5_dw_off(typ, fld) (__mlx5_bit_off(typ, fld) / 32)
+#define __mlx5_64_off(typ, fld) (__mlx5_bit_off(typ, fld) / 64)
 #define __mlx5_dw_mask(typ, fld) (__mlx5_mask(typ, fld) << \
 				  __mlx5_dw_bit_off(typ, fld))
 #define __mlx5_mask(typ, fld) ((u32)((1ull << __mlx5_bit_sz(typ, fld)) - 1))
@@ -399,6 +399,8 @@ typedef uint8_t u8;
 #define MLX5_GET(typ, p, fld) ((rte_be_to_cpu_32(*((__be32 *)(p) + \
 		 __mlx5_dw_off(typ, fld))) >> __mlx5_dw_bit_off(typ, fld)) & \
 		__mlx5_mask(typ, fld))
+#define MLX5_GET64(typ, p, fld) (rte_be_to_cpu_64(*((__be64 *)(p) + \
+		__mlx5_64_off(typ, fld))))
 
 struct mlx5_ifc_fte_match_set_misc_bits {
 	u8 reserved_at_0[0x8];

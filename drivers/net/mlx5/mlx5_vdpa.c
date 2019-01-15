@@ -113,6 +113,8 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	uint32_t in_special[MLX5_ST_SZ_DW(query_special_contexts_in)] = {0};
 	uint32_t out_special[MLX5_ST_SZ_DW(query_special_contexts_out)] = {0};
 	uint8_t dump_mkey_reported = 0;
+	void *virtio_net_cap = NULL;
+	void *cap = NULL;
 
 	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
 	MLX5_SET(query_hca_cap_in, in, op_mod,
@@ -123,10 +125,8 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	    DRV_LOG(DEBUG, "Failed to Query Current HCA CAP section\n");
 	    return -1;
 	}
-	dump_mkey_reported = MLX5_GET(cmd_hca_cap,
-				      MLX5_ADDR_OF(query_hca_cap_out, out,
-					           capability),
-				      dump_fill_mkey);
+	cap = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
+	dump_mkey_reported = MLX5_GET(cmd_hca_cap, cap, dump_fill_mkey);
 	if (!dump_mkey_reported) {
 	    DRV_LOG(DEBUG, "dump_fill_mkey is not supported\n");
 	    return -1;
@@ -143,9 +143,26 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 					out_special,
 					dump_fill_mkey);
 	/*
-	 * TODO (idos): Take from QUERY HCA CAP Device Emulation Capabilities.
-	 * For now only set protocol features support
+	 * TODO (idos): Once we have FW support, exit if not supported (else path)
 	 */
+	if (MLX5_GET64(cmd_hca_cap, cap, general_obj_types) &
+		MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ) {
+		 DRV_LOG(DEBUG, "Virtio acceleration supported by the device!\n");
+		 MLX5_SET(query_hca_cap_in, in, op_mod,
+				 (MLX5_HCA_CAP_DEVICE_EMULATION << 1) |
+				 (MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
+		 if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
+		                                    out, sizeof(out))) {
+			 DRV_LOG(DEBUG, "Failed to Query Emulation CAP section\n");
+			 return -1;
+		 }
+		 virtio_net_cap = MLX5_ADDR_OF(device_emulation, cap, virtnet);
+		 priv->caps.max_num_virtqs =
+				 MLX5_GET(virtio_net_cap, virtio_net_cap, max_num_of_virtqs);
+	} else {
+		DRV_LOG(DEBUG, "Virtio acceleration not supported by the device\n");
+		priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
+	}
 	priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
 	priv->caps.virtio_net_features = (1ULL << VHOST_USER_F_PROTOCOL_FEATURES);
 	DRV_LOG(DEBUG, "Virtio Caps:");
