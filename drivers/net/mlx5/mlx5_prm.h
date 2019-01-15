@@ -816,6 +816,15 @@ struct mlx5_ifc_cmd_hca_cap_bits {
 	u8 reserved_at_61f[0x1e1];
 };
 
+struct mlx5_ifc_virtio_net_cap_bits {
+	u8 max_num_of_virtqs[0x10];
+	u8 doorbell_bar_offset[0x10];
+	u8 log_doorbell_bar_size[0x8];
+	u8 reserved_at_28[0x18];
+	u8 log_doorbell_stride[0x8];
+	u8 reserved_at_48[0xb8];
+};
+
 struct mlx5_ifc_device_emulation_bits {
 	u8 nvme_offload_type_sqe[0x1];
 	u8 nvme_offload_type_doorbell_only[0x1];
@@ -823,7 +832,9 @@ struct mlx5_ifc_device_emulation_bits {
 	u8 log_max_nvme_offload_namespaces[0x5];
 	u8 reserved_at_8[0x28];
 	u8 registers_size[0x10];
-	u8 reserved_at_100[0x7c0];
+	u8 reserved_at_40[0xc0];
+	struct mlx5_ifc_virtio_net_cap_bits virtnet;
+	u8 reserved_at_200[0x600];
 };
 
 union mlx5_ifc_hca_cap_union_bits {
