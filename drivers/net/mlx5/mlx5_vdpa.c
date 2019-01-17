@@ -30,6 +30,8 @@ struct mlx5_vdpa_caps {
 struct vdpa_priv {
 	int id; /* vDPA device id. */
 	int vid; /* Vhost-lib virtio_net driver id */
+	uint32_t pdn; /* PD number */
+	struct mlx5dv_devx_obj *pd_obj; /* PD object handler */
 	rte_atomic32_t dev_attached;
 	struct ibv_context *ctx; /* Device context. */
 	struct rte_vdpa_dev_addr dev_addr;
@@ -45,6 +47,24 @@ TAILQ_HEAD(vdpa_priv_list_head, priv_list);
 static struct vdpa_priv_list_head priv_list =
 					TAILQ_HEAD_INITIALIZER(priv_list);
 static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int create_pd(struct vdpa_priv *priv)
+{
+    uint32_t in[MLX5_ST_SZ_DW(alloc_pd_in)] = {0};
+    uint32_t out[MLX5_ST_SZ_DW(alloc_pd_out)] = {0};
+    struct mlx5dv_devx_obj *pd;
+
+    MLX5_SET(alloc_pd_in, in, opcode, MLX5_CMD_OP_ALLOC_PD);
+    pd = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+                                       out, sizeof(out));
+    if (!pd) {
+        DRV_LOG(ERR, "PD allocation failure");
+        return -1;
+    }
+    priv->pdn = MLX5_GET(alloc_pd_out, out, pd);
+    priv->pd_obj = pd;
+    return 0;
+}
 
 static struct vdpa_priv_list *
 find_priv_resource_by_did(int did)
@@ -108,6 +128,10 @@ mlx5_vdpa_dev_config(int vid)
     }
     priv = list_elem->priv;
     priv->vid = vid;
+    if (create_pd(priv)) {
+        DRV_LOG(ERR, "Error allocating PD");
+        return -1;
+    }
     rte_atomic32_set(&priv->dev_attached, 1);
     return 0;
 }
@@ -126,6 +150,11 @@ mlx5_vdpa_dev_close(int vid)
         return -1;
     }
     priv = list_elem->priv;
+    if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
+        DRV_LOG(ERR, "Error when DEALLOCATING PD");
+        return -1;
+    }
+    priv->pdn = 0;
     rte_atomic32_set(&priv->dev_attached, 0);
     return 0;
 }
