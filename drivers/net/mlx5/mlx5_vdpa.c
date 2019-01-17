@@ -17,6 +17,7 @@
 
 /** Driver Static values in the absence of device VIRTIO emulation support */
 #define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
+#define SPECIAL_CQ_FOR_VDPA               0
 
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
@@ -27,15 +28,22 @@ struct mlx5_vdpa_caps {
 	uint64_t virtio_net_features;
 };
 
+struct virtq_info {
+    uint32_t rqn;
+    struct mlx5dv_devx_obj *rq_obj;
+};
+
 struct vdpa_priv {
 	int id; /* vDPA device id. */
 	int vid; /* Vhost-lib virtio_net driver id */
 	uint32_t pdn; /* PD number */
+	uint16_t nr_vring;
 	struct mlx5dv_devx_obj *pd_obj; /* PD object handler */
 	rte_atomic32_t dev_attached;
 	struct ibv_context *ctx; /* Device context. */
 	struct rte_vdpa_dev_addr dev_addr;
 	struct mlx5_vdpa_caps caps;
+	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
 
 };
 struct vdpa_priv_list {
@@ -63,6 +71,69 @@ static int create_pd(struct vdpa_priv *priv)
     }
     priv->pdn = MLX5_GET(alloc_pd_out, out, pd);
     priv->pd_obj = pd;
+    return 0;
+}
+
+static int
+create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
+{
+    uint32_t in[MLX5_ST_SZ_DW(create_rq_in)] = {0};
+    uint32_t out[MLX5_ST_SZ_DW(create_rq_out)] = {0};
+    struct mlx5dv_devx_obj *rq_obj = NULL;
+    void *rqc = NULL;
+    void *wq = NULL;
+
+    MLX5_SET(create_rq_in, in, opcode, MLX5_CMD_OP_CREATE_RQ);
+    rqc = MLX5_ADDR_OF(create_rq_in, in, ctx);
+    MLX5_SET(rqc, rqc, cqn, SPECIAL_CQ_FOR_VDPA);
+    wq = MLX5_ADDR_OF(rqc, rqc, wq);
+    /* TODO(idos): Check log_wq_size according to min and max of the device */
+    MLX5_SET(wq, wq, log_wq_sz, qsize);
+    MLX5_SET(wq, wq, pd, priv->pdn);
+    rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+                                           out, sizeof(out));
+    if (!rq_obj) {
+        DRV_LOG(DEBUG, "Failed to CREATE_RQ through Devx\n");
+        return -1;
+    }
+    priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
+    priv->virtq[idx].rq_obj = rq_obj;
+
+    return 0;
+}
+
+static int mlx5_vdpa_setup_rx(struct vdpa_priv *priv)
+{
+    int i, nr_vring;
+    struct rte_vhost_vring vq;
+
+    nr_vring = rte_vhost_get_vring_num(priv->vid);
+    for (i = 0; i < nr_vring; i++) {
+        if (i == 0 || i % 2 == 0) {
+            rte_vhost_get_vhost_vring(priv->vid, i, &vq);
+            if (create_rq(priv, vq.size, i)) {
+                DRV_LOG(ERR, "Create RQ failed for Virtqueue %d", i);
+                return -1;
+            }
+        }
+    }
+    priv->nr_vring = i;
+    return 0;
+}
+
+static int mlx5_vdpa_release_rx(struct vdpa_priv *priv)
+{
+    int i;
+
+    for (i = 0; i < priv->nr_vring; i++) {
+        if (i == 0 || i % 2 ==0) {
+            if (mlx5_glue->dv_devx_obj_destroy(priv->virtq[i].rq_obj)) {
+                DRV_LOG(ERR, "Error in destory RQ for Virtqueue %d", i);
+                return -1;
+            }
+            priv->virtq[i].rqn = 0;
+        }
+    }
     return 0;
 }
 
@@ -132,6 +203,10 @@ mlx5_vdpa_dev_config(int vid)
         DRV_LOG(ERR, "Error allocating PD");
         return -1;
     }
+    if (mlx5_vdpa_setup_rx(priv)) {
+        DRV_LOG(ERR, "Error setting up RX flow");
+        return -1;
+    }
     rte_atomic32_set(&priv->dev_attached, 1);
     return 0;
 }
@@ -155,6 +230,10 @@ mlx5_vdpa_dev_close(int vid)
         return -1;
     }
     priv->pdn = 0;
+    if (mlx5_vdpa_release_rx(priv)) {
+        DRV_LOG(ERR, "Error in releasing RX resources");
+        return -1;
+    }
     rte_atomic32_set(&priv->dev_attached, 0);
     return 0;
 }
