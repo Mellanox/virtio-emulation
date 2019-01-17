@@ -492,6 +492,18 @@ mlx5_glue_dv_devx_general_cmd(struct ibv_context *context,
     return mlx5dv_devx_general_cmd(context, in, inlen, out, outlen);
 }
 
+static struct mlx5dv_devx_obj *
+mlx5_glue_dv_devx_obj_create(struct ibv_context *context,
+                             const void *in, size_t inlen,
+                             void *out, size_t outlen) {
+	return mlx5dv_devx_obj_create(context, in, inlen, out, outlen);
+}
+
+static int
+mlx5_glue_dv_devx_obj_destroy(struct mlx5dv_devx_obj *obj) {
+    return mlx5dv_devx_obj_destroy(obj);
+}
+
 
 alignas(RTE_CACHE_LINE_SIZE)
 const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
@@ -551,4 +563,6 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 			mlx5_glue_dv_create_flow_action_packet_reformat,
 	.dv_open_device = mlx5_glue_dv_open_device,
     .dv_devx_general_cmd = mlx5_glue_dv_devx_general_cmd,
+    .dv_devx_obj_create = mlx5_glue_dv_devx_obj_create,
+    .dv_devx_obj_destroy = mlx5_glue_dv_devx_obj_destroy,
 };

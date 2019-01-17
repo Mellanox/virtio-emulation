@@ -171,6 +171,10 @@ struct mlx5_glue {
     int (*dv_devx_general_cmd)(struct ibv_context *context,
                                const void *in, size_t inlen,
                                void *out, size_t outlen);
+    struct mlx5dv_devx_obj *(*dv_devx_obj_create)(struct ibv_context *context,
+                                                  const void *in, size_t inlen,
+                                                  void *out, size_t outlen);
+    int (*dv_devx_obj_destroy)(struct mlx5dv_devx_obj *obj);
 };
 
 const struct mlx5_glue *mlx5_glue;
