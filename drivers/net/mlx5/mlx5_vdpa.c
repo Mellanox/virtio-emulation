@@ -29,6 +29,8 @@ struct mlx5_vdpa_caps {
 
 struct vdpa_priv {
 	int id; /* vDPA device id. */
+	int vid; /* Vhost-lib virtio_net driver id */
+	rte_atomic32_t dev_attached;
 	struct ibv_context *ctx; /* Device context. */
 	struct rte_vdpa_dev_addr dev_addr;
 	struct mlx5_vdpa_caps caps;
@@ -91,12 +93,49 @@ mlx5_vdpa_get_vdpa_features(int did, uint64_t *features)
 	return 0;
 }
 
+static int
+mlx5_vdpa_dev_config(int vid)
+{
+    int did;
+    struct vdpa_priv_list *list_elem;
+    struct vdpa_priv *priv;
+
+    did = rte_vhost_get_vdpa_device_id(vid);
+    list_elem = find_priv_resource_by_did(did);
+    if (list_elem == NULL) {
+        DRV_LOG(ERR, "Invalid device id: %d", did);
+        return -1;
+    }
+    priv = list_elem->priv;
+    priv->vid = vid;
+    rte_atomic32_set(&priv->dev_attached, 1);
+    return 0;
+}
+
+static int
+mlx5_vdpa_dev_close(int vid)
+{
+    int did;
+    struct vdpa_priv_list *list_elem;
+    struct vdpa_priv *priv;
+
+    did = rte_vhost_get_vdpa_device_id(vid);
+    list_elem = find_priv_resource_by_did(did);
+    if (list_elem == NULL) {
+        DRV_LOG(ERR, "Invalid device id: %d", did);
+        return -1;
+    }
+    priv = list_elem->priv;
+    rte_atomic32_set(&priv->dev_attached, 0);
+    return 0;
+}
+
 static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.get_queue_num = mlx5_vdpa_get_queue_num,
 	.get_features = mlx5_vdpa_get_vdpa_features,
 	.get_protocol_features = NULL,
-	.dev_conf = NULL,
-	.dev_close = NULL,
+	.dev_conf = mlx5_vdpa_dev_config,
+	.dev_close = mlx5_vdpa_dev_close,
 	.set_vring_state = NULL,
 	.set_features = NULL,
 	.migration_done = NULL,
