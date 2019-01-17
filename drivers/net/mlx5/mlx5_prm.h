@@ -964,6 +964,22 @@ struct mlx5_ifc_create_rq_out_bits {
     u8 reserved_at_60[0x20];
 };
 
+struct mlx5_ifc_alloc_pd_in_bits {
+    u8 opcode[0x10];
+    u8 reserved_at_10[0x20];
+    u8 op_mod[0x10];
+    u8 reserved_at_40[0x40];
+};
+
+struct mlx5_ifc_alloc_pd_out_bits {
+    u8 status[0x8];
+    u8 reserved_at_8[0x18];
+    u8 syndrome[0x20];
+    u8 reserved_at_40[0x8];
+    u8 pd[0x18];
+    u8 reserved_at_60[0x20];
+};
+
 struct mlx5_ifc_general_obj_in_cmd_hdr_bits {
 	u8 opcode[0x10];
 	u8 reserved_at_10[0x20];
@@ -1002,6 +1018,7 @@ struct mlx5_ifc_create_virtq_in_bits {
 enum {
 	MLX5_CMD_OP_QUERY_HCA_CAP          = 0x100,
 	MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS = 0x203,
+	MLX5_CMD_OP_ALLOC_PD               = 0x800,
 	MLX5_CMD_OP_CREATE_RQ              = 0x908,
 	MLX5_CMD_OP_CREATE_GENERAL_OBJECT  = 0xa00,
 	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT  = 0xa01,
