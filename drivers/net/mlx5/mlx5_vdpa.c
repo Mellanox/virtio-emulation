@@ -113,7 +113,8 @@ static int mlx5_vdpa_setup_rx(struct vdpa_priv *priv)
             rte_vhost_get_vhost_vring(priv->vid, i, &vq);
             if (create_rq(priv, vq.size, i)) {
                 DRV_LOG(ERR, "Create RQ failed for Virtqueue %d", i);
-                return -1;
+                /* TODO(idos): Remove this when FW supports */
+                DRV_LOG(INFO, "Contiuing without RQ for Virtqueue %d", i);
             }
         }
     }
