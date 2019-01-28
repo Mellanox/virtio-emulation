@@ -8,6 +8,8 @@
 #include <rte_malloc.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <sys/mman.h>
+#include <sys/epoll.h>
 
 #include "mlx5_glue.h"
 #include "mlx5_defs.h"
@@ -42,6 +44,12 @@ struct virtq_info {
     struct mlx5dv_devx_obj *rq_obj;
 };
 
+struct mlx5_vdpa_relay_thread {
+	int epfd; /* Epoll fd for realy thread. */
+	pthread_t tid; /* Notify thread id. */
+	void *notify_base; /* Notify base address. */
+};
+
 struct vdpa_priv {
 	int id; /* vDPA device id. */
 	int vid; /* Vhost-lib virtio_net driver id */
@@ -53,6 +61,7 @@ struct vdpa_priv {
 	struct rte_vdpa_dev_addr dev_addr;
 	struct mlx5_vdpa_caps caps;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
+	struct mlx5_vdpa_relay_thread relay;
 };
 
 struct vdpa_priv_list {
@@ -248,6 +257,105 @@ mlx5_vdpa_report_notify_area(int vid __rte_unused, int qid , uint64_t *offset,
 	return 0;
 }
 
+static void
+mlx5_vdpa_notify_queue(struct vdpa_priv *priv, int qid __rte_unused)
+{
+	/*
+	 * Write must be 4B in length in order to pass the device PCI.
+	 * need to further investigate the root cause.
+	 */
+	rte_write32(qid, priv->relay.notify_base);
+}
+
+static void *
+mlx5_vdpa_notify_relay(void *arg)
+{
+	int i, kickfd, epfd, nfds = 0;
+	uint32_t qid, q_num;
+	struct epoll_event events[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
+	struct epoll_event ev;
+	uint64_t buf;
+	int nbytes;
+	struct rte_vhost_vring vring;
+	struct vdpa_priv *priv = (struct vdpa_priv *)arg;
+
+	q_num = rte_vhost_get_vring_num(priv->id);
+	epfd = epoll_create(MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2);
+	if (epfd < 0) {
+		DRV_LOG(ERR, "failed to create epoll instance.");
+		return NULL;
+	}
+	priv->relay.epfd = epfd;
+	for (qid = 0; qid < q_num; qid++) {
+		ev.events = EPOLLIN | EPOLLPRI;
+		rte_vhost_get_vhost_vring(priv->id, qid, &vring);
+		ev.data.u64 = qid | (uint64_t)vring.kickfd << 32;
+		if (epoll_ctl(epfd, EPOLL_CTL_ADD, vring.kickfd, &ev) < 0) {
+			DRV_LOG(ERR, "epoll add error: %s", strerror(errno));
+			return NULL;
+		}
+	}
+	for (;;) {
+		nfds = epoll_wait(epfd, events, q_num, -1);
+		if (nfds < 0) {
+			if (errno == EINTR)
+				continue;
+			DRV_LOG(ERR, "epoll_wait return fail\n");
+			return NULL;
+		}
+		for (i = 0; i < nfds; i++) {
+			qid = events[i].data.u32;
+			kickfd = (uint32_t)(events[i].data.u64 >> 32);
+			do {
+				nbytes = read(kickfd, &buf, 8);
+				if (nbytes < 0) {
+					if (errno == EINTR ||
+					    errno == EWOULDBLOCK ||
+					    errno == EAGAIN)
+						continue;
+					DRV_LOG(INFO, "Error reading "
+						"kickfd: %s",
+						strerror(errno));
+				}
+				break;
+			} while (1);
+			mlx5_vdpa_notify_queue(priv, qid);
+		}
+	}
+	return NULL;
+}
+
+static int
+mlx5_vdpa_setup_notify_relay(struct vdpa_priv *priv)
+{
+	uint64_t offset, size;
+	void *addr;
+	long page_size = sysconf(_SC_PAGESIZE);
+	int ret;
+
+	/* set the base notify addr */
+	if (mlx5_vdpa_report_notify_area(priv->id, 0, &offset, &size) < 0) {
+		return -1;
+	}
+	/* Always map the entire page. */
+	addr = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+		    priv->ctx->cmd_fd, offset);
+	if (addr == MAP_FAILED) {
+		DRV_LOG(ERR, "Mapping doorbell page failed. device: %d",
+			priv->id);
+		return -1;
+	}
+	priv->relay.notify_base = addr;
+	/* TODO: enforce the thread affinity. */
+	ret = pthread_create(&priv->relay.tid, NULL, mlx5_vdpa_notify_relay,
+			     (void *)priv);
+	if (ret) {
+		DRV_LOG(ERR, "failed to create notify relay pthread.");
+		return -1;
+	}
+	return 0;
+}
+
 static int
 mlx5_vdpa_dev_config(int vid)
 {
@@ -271,8 +379,28 @@ mlx5_vdpa_dev_config(int vid)
         DRV_LOG(ERR, "Error setting up RX flow");
         return -1;
     }
+    mlx5_vdpa_setup_notify_relay(priv);
     rte_atomic32_set(&priv->dev_attached, 1);
     return 0;
+}
+
+static int
+mlx5_vdpa_unset_notify_relay(struct vdpa_priv *priv)
+{
+	void *status;
+	long page_size = sysconf(_SC_PAGESIZE);
+
+	if (priv->relay.tid) {
+		pthread_cancel(priv->relay.tid);
+		pthread_join(priv->relay.tid, &status);
+	}
+	priv->relay.tid	= 0;
+	if (priv->relay.epfd >= 0)
+		close(priv->relay.epfd);
+	priv->relay.epfd = -1;
+	munmap(priv->relay.notify_base, page_size);
+	priv->relay.notify_base = NULL;
+	return 0;
 }
 
 static int
@@ -289,6 +417,7 @@ mlx5_vdpa_dev_close(int vid)
         return -1;
     }
     priv = list_elem->priv;
+    mlx5_vdpa_unset_notify_relay(priv);
     if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
         DRV_LOG(ERR, "Error when DEALLOCATING PD");
         return -1;
