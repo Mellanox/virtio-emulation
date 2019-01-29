@@ -481,27 +481,31 @@ mlx5_glue_dv_create_flow_action_packet_reformat
 
 static struct ibv_context *
 mlx5_glue_dv_open_device(struct ibv_device *device,
-			 struct mlx5dv_context_attr *attr) {
+			 struct mlx5dv_context_attr *attr)
+{
 	return mlx5dv_open_device(device, attr);
 }
 
 static int
 mlx5_glue_dv_devx_general_cmd(struct ibv_context *context,
-                              const void *in, size_t inlen,
-                              void *out, size_t outlen) {
-    return mlx5dv_devx_general_cmd(context, in, inlen, out, outlen);
+			      const void *in, size_t inlen,
+			      void *out, size_t outlen)
+{
+	return mlx5dv_devx_general_cmd(context, in, inlen, out, outlen);
 }
 
 static struct mlx5dv_devx_obj *
 mlx5_glue_dv_devx_obj_create(struct ibv_context *context,
-                             const void *in, size_t inlen,
-                             void *out, size_t outlen) {
+			     const void *in, size_t inlen,
+			     void *out, size_t outlen)
+{
 	return mlx5dv_devx_obj_create(context, in, inlen, out, outlen);
 }
 
 static int
-mlx5_glue_dv_devx_obj_destroy(struct mlx5dv_devx_obj *obj) {
-    return mlx5dv_devx_obj_destroy(obj);
+mlx5_glue_dv_devx_obj_destroy(struct mlx5dv_devx_obj *obj)
+{
+	return mlx5dv_devx_obj_destroy(obj);
 }
 
 
@@ -562,7 +566,7 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.dv_create_flow_action_packet_reformat =
 			mlx5_glue_dv_create_flow_action_packet_reformat,
 	.dv_open_device = mlx5_glue_dv_open_device,
-    .dv_devx_general_cmd = mlx5_glue_dv_devx_general_cmd,
-    .dv_devx_obj_create = mlx5_glue_dv_devx_obj_create,
-    .dv_devx_obj_destroy = mlx5_glue_dv_devx_obj_destroy,
+	.dv_devx_general_cmd = mlx5_glue_dv_devx_general_cmd,
+	.dv_devx_obj_create = mlx5_glue_dv_devx_obj_create,
+	.dv_devx_obj_destroy = mlx5_glue_dv_devx_obj_destroy,
 };
