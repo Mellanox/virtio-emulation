@@ -168,13 +168,14 @@ struct mlx5_glue {
 		 enum mlx5dv_flow_table_type ft_type);
 	struct ibv_context *(*dv_open_device)(struct ibv_device *device,
 					      struct mlx5dv_context_attr *attr);
-    int (*dv_devx_general_cmd)(struct ibv_context *context,
-                               const void *in, size_t inlen,
-                               void *out, size_t outlen);
-    struct mlx5dv_devx_obj *(*dv_devx_obj_create)(struct ibv_context *context,
-                                                  const void *in, size_t inlen,
-                                                  void *out, size_t outlen);
-    int (*dv_devx_obj_destroy)(struct mlx5dv_devx_obj *obj);
+	int (*dv_devx_general_cmd)(struct ibv_context *context,
+			const void *in, size_t inlen,
+			void *out, size_t outlen);
+	struct mlx5dv_devx_obj *(*dv_devx_obj_create)
+			(struct ibv_context *context,
+			 const void *in, size_t inlen,
+			 void *out, size_t outlen);
+	int (*dv_devx_obj_destroy)(struct mlx5dv_devx_obj *obj);
 };
 
 const struct mlx5_glue *mlx5_glue;

@@ -1379,8 +1379,11 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	assert(pci_drv == &mlx5_driver);
 	errno = 0;
 
-	/* net/mlx5 pmd skips probe if device needs to work in vdpa mode
-	 * In favor for net/mlx5_vdpa which may use the same PCI device for it */
+	/*
+	 * net/mlx5 pmd skips probe if device needs to work in vdpa mode
+	 * In favor for net/mlx5_vdpa which may use the same PCI device
+	 * for it
+	 */
 	if (vdpa_mode_selected(pci_dev->device.devargs))
 		return 1;
 

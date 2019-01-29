@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2018 Mellanox Technologies, Ltd
  */
+#include <unistd.h>
+#include <dlfcn.h>
+#include <sys/mman.h>
+#include <sys/epoll.h>
 
 #include <rte_bus_pci.h>
 #include <rte_errno.h>
 #include <rte_vdpa.h>
 #include <rte_malloc.h>
-#include <unistd.h>
-#include <dlfcn.h>
-#include <sys/mman.h>
-#include <sys/epoll.h>
 
 #include "mlx5_glue.h"
 #include "mlx5_defs.h"
@@ -40,33 +40,33 @@ struct mlx5_vdpa_caps {
 };
 
 struct virtq_info {
-    uint32_t rqn;
-    struct mlx5dv_devx_obj *rq_obj;
+	uint32_t               rqn;
+	struct mlx5dv_devx_obj *rq_obj;
 };
 
 struct mlx5_vdpa_relay_thread {
-	int epfd; /* Epoll fd for realy thread. */
+	int       epfd; /* Epoll fd for realy thread. */
 	pthread_t tid; /* Notify thread id. */
-	void *notify_base; /* Notify base address. */
+	void      *notify_base; /* Notify base address. */
 };
 
 struct vdpa_priv {
-	int id; /* vDPA device id. */
-	int vid; /* Vhost-lib virtio_net driver id */
-	uint32_t pdn; /* PD number */
-	uint16_t nr_vring;
-	struct mlx5dv_devx_obj *pd_obj; /* PD object handler */
-	rte_atomic32_t dev_attached;
-	struct ibv_context *ctx; /* Device context. */
-	struct rte_vdpa_dev_addr dev_addr;
-	struct mlx5_vdpa_caps caps;
-	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
+	int                           id; /* vDPA device id. */
+	int                           vid; /* virtio_net driver id */
+	uint32_t                      pdn; /* PD number */
+	uint16_t                      nr_vring;
+	struct mlx5dv_devx_obj        *pd_obj; /* PD object handler */
+	rte_atomic32_t                dev_attached;
+	struct ibv_context            *ctx; /* Device context. */
+	struct rte_vdpa_dev_addr      dev_addr;
+	struct mlx5_vdpa_caps         caps;
 	struct mlx5_vdpa_relay_thread relay;
+	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
 };
 
 struct vdpa_priv_list {
 	TAILQ_ENTRY(vdpa_priv_list) next;
-	struct vdpa_priv *priv;
+	struct vdpa_priv           *priv;
 };
 
 TAILQ_HEAD(vdpa_priv_list_head, priv_list);
@@ -76,117 +76,124 @@ static pthread_mutex_t priv_list_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int create_pd(struct vdpa_priv *priv)
 {
-    uint32_t in[MLX5_ST_SZ_DW(alloc_pd_in)] = {0};
-    uint32_t out[MLX5_ST_SZ_DW(alloc_pd_out)] = {0};
-    struct mlx5dv_devx_obj *pd;
+	uint32_t in[MLX5_ST_SZ_DW(alloc_pd_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(alloc_pd_out)] = {0};
+	struct mlx5dv_devx_obj *pd;
 
-    MLX5_SET(alloc_pd_in, in, opcode, MLX5_CMD_OP_ALLOC_PD);
-    pd = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
-                                       out, sizeof(out));
-    if (!pd) {
-        DRV_LOG(ERR, "PD allocation failure");
-        return -1;
-    }
-    priv->pdn = MLX5_GET(alloc_pd_out, out, pd);
-    priv->pd_obj = pd;
-    return 0;
+	MLX5_SET(alloc_pd_in, in, opcode, MLX5_CMD_OP_ALLOC_PD);
+	pd = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+					   out, sizeof(out));
+	if (!pd) {
+		DRV_LOG(ERR, "PD allocation failure");
+		return -1;
+	}
+	priv->pdn = MLX5_GET(alloc_pd_out, out, pd);
+	priv->pd_obj = pd;
+	return 0;
 }
 
 static int
 create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 {
-    uint32_t in[MLX5_ST_SZ_DW(create_rq_in)] = {0};
-    uint32_t out[MLX5_ST_SZ_DW(create_rq_out)] = {0};
-    struct mlx5dv_devx_obj *rq_obj = NULL;
-    void *rqc = NULL;
-    void *wq = NULL;
+	uint32_t in[MLX5_ST_SZ_DW(create_rq_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_rq_out)] = {0};
+	struct mlx5dv_devx_obj *rq_obj = NULL;
+	void *rqc = NULL;
+	void *wq = NULL;
 
-    MLX5_SET(create_rq_in, in, opcode, MLX5_CMD_OP_CREATE_RQ);
-    rqc = MLX5_ADDR_OF(create_rq_in, in, ctx);
-    MLX5_SET(rqc, rqc, cqn, SPECIAL_CQ_FOR_VDPA);
-    wq = MLX5_ADDR_OF(rqc, rqc, wq);
-    /* TODO(idos): Check log_wq_size according to min and max of the device */
-    MLX5_SET(wq, wq, log_wq_sz, qsize);
-    MLX5_SET(wq, wq, pd, priv->pdn);
-    rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
-                                           out, sizeof(out));
-    if (!rq_obj) {
-        DRV_LOG(DEBUG, "Failed to CREATE_RQ through Devx\n");
-        return -1;
-    }
-    priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
-    priv->virtq[idx].rq_obj = rq_obj;
+	MLX5_SET(create_rq_in, in, opcode, MLX5_CMD_OP_CREATE_RQ);
+	rqc = MLX5_ADDR_OF(create_rq_in, in, ctx);
+	MLX5_SET(rqc, rqc, cqn, SPECIAL_CQ_FOR_VDPA);
+	wq = MLX5_ADDR_OF(rqc, rqc, wq);
+	/* TODO(idos): Check log_wq_size according to device CAP */
+	MLX5_SET(wq, wq, log_wq_sz, qsize);
+	MLX5_SET(wq, wq, pd, priv->pdn);
+	rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+					       out, sizeof(out));
+	if (!rq_obj) {
+		DRV_LOG(DEBUG, "Failed to CREATE_RQ through Devx\n");
+		return -1;
+	}
+	priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
+	priv->virtq[idx].rq_obj = rq_obj;
 
-    return 0;
+	return 0;
 }
 
 static int mlx5_vdpa_setup_rx(struct vdpa_priv *priv)
 {
-    int i, nr_vring;
-    struct rte_vhost_vring vq;
+	int i, nr_vring;
+	struct rte_vhost_vring vq;
 
-    nr_vring = rte_vhost_get_vring_num(priv->vid);
-    for (i = 0; i < nr_vring; i++) {
-        if (i == 0 || i % 2 == 0) {
-            rte_vhost_get_vhost_vring(priv->vid, i, &vq);
-            if (create_rq(priv, vq.size, i)) {
-                DRV_LOG(ERR, "Create RQ failed for Virtqueue %d", i);
-                /* TODO(idos): Remove this when FW supports */
-                DRV_LOG(INFO, "Contiuing without RQ for Virtqueue %d", i);
-            }
-        }
-    }
-    priv->nr_vring = i;
-    return 0;
+	nr_vring = rte_vhost_get_vring_num(priv->vid);
+	for (i = 0; i < nr_vring; i++) {
+		if (i == 0 || i % 2 == 0) {
+			rte_vhost_get_vhost_vring(priv->vid, i, &vq);
+			if (create_rq(priv, vq.size, i)) {
+				DRV_LOG(ERR,
+					"Create RQ failed for Virtqueue %d",
+					i);
+				/* TODO(idos): Remove this when FW supports */
+				DRV_LOG(INFO,
+					"Contiuing without RQ of Virtqueue %d",
+					i);
+			}
+		}
+	}
+	priv->nr_vring = i;
+	return 0;
 }
 
 static int mlx5_vdpa_release_rx(struct vdpa_priv *priv)
 {
-    int i;
+	struct mlx5dv_devx_obj *rq;
+	int i;
 
-    for (i = 0; i < priv->nr_vring; i++) {
-        if (i == 0 || i % 2 ==0) {
-            if (mlx5_glue->dv_devx_obj_destroy(priv->virtq[i].rq_obj)) {
-                DRV_LOG(ERR, "Error in destory RQ for Virtqueue %d", i);
-                return -1;
-            }
-            priv->virtq[i].rqn = 0;
-        }
-    }
-    return 0;
+	for (i = 0; i < priv->nr_vring; i++) {
+		if (i == 0 || i % 2 == 0) {
+			rq = priv->virtq[i].rq_obj;
+			if (mlx5_glue->dv_devx_obj_destroy(rq)) {
+				DRV_LOG(ERR, "Error DESTROY)RQ VirtQ %d", i);
+				return -1;
+			}
+			priv->virtq[i].rq_obj = NULL;
+			priv->virtq[i].rqn = 0;
+		}
+	}
+	return 0;
 }
 
 static struct vdpa_priv_list *
 find_priv_resource_by_did(int did)
 {
-    int found = 0;
-    struct vdpa_priv_list *list;
+	int found = 0;
+	struct vdpa_priv_list *list;
 
-    pthread_mutex_lock(&priv_list_lock);
-    TAILQ_FOREACH(list, &priv_list, next) {
-        if (did == list->priv->id) {
-            found = 1;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&priv_list_lock);
-    if (!found)
-        return NULL;
-    return list;
+	pthread_mutex_lock(&priv_list_lock);
+	TAILQ_FOREACH(list, &priv_list, next) {
+		if (did == list->priv->id) {
+			found = 1;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&priv_list_lock);
+	if (!found)
+		return NULL;
+	return list;
 }
 
 static int
 mlx5_vdpa_get_queue_num(int did, uint32_t *queue_num)
 {
-    struct vdpa_priv_list *list_elem;
+	struct vdpa_priv_list *list_elem;
 
-    list_elem = find_priv_resource_by_did(did);
-    if (list_elem == NULL) {
-        DRV_LOG(ERR, "Invalid device id: %d", did);
-        return -1;
-    }
-    *queue_num = list_elem->priv->caps.max_num_virtqs;
-    return 0;
+	list_elem = find_priv_resource_by_did(did);
+	if (list_elem == NULL) {
+		DRV_LOG(ERR, "Invalid device id: %d", did);
+		return -1;
+	}
+	*queue_num = list_elem->priv->caps.max_num_virtqs;
+	return 0;
 }
 
 static int
@@ -211,7 +218,6 @@ static inline void
 mlx5_vdpa_set_command(int command, uint16_t *offset)
 {
 	*offset |= (command << MLX5_IB_MMAP_CMD_SHIFT);
-	return;
 }
 
 static inline void
@@ -221,7 +227,6 @@ mlx5_vdpa_set_ext_index(int index, uint16_t *offset)
 
 	*offset |= (((index >> MLX5_IB_MMAP_CMD_SHIFT) << shift) |
 		    (index & MLX5_IB_MMAP_INDEX_MASK));
-	return;
 }
 
 /*
@@ -238,7 +243,7 @@ mlx5_vdpa_get_notify_offset(int qid __rte_unused)
 }
 
 static int
-mlx5_vdpa_report_notify_area(int vid __rte_unused, int qid , uint64_t *offset,
+mlx5_vdpa_report_notify_area(int vid __rte_unused, int qid, uint64_t *offset,
 			     uint64_t *size)
 {
 	long page_size = sysconf(_SC_PAGESIZE);
@@ -246,11 +251,11 @@ mlx5_vdpa_report_notify_area(int vid __rte_unused, int qid , uint64_t *offset,
 	*offset = mlx5_vdpa_get_notify_offset(qid);
 	*offset = *offset * page_size;
 	/*
-	 * For now size can be only page size. smaller size does not fit naturally to the way KVM
-	 * subscribe translations into the EPT.
+	 * For now size can be only page size. smaller size does not fit
+	 * naturally to the way KVM subscribe translations into the EPT.
 	 *
-	 * This much fit BlueField1 solution. need to evaluate if we can bypass this issue in SW
-	 * to match ConnectX-6 implementation.
+	 * This much fit BlueField1 solution. need to evaluate if we can
+	 * bypass this issue in SW to match ConnectX-6 implementation.
 	 */
 	*size = page_size;
 	DRV_LOG(DEBUG, "Notify offset is 0x%" PRIx64 " size is %" PRId64,
@@ -335,9 +340,8 @@ mlx5_vdpa_setup_notify_relay(struct vdpa_priv *priv)
 	int ret;
 
 	/* set the base notify addr */
-	if (mlx5_vdpa_report_notify_area(priv->id, 0, &offset, &size) < 0) {
+	if (mlx5_vdpa_report_notify_area(priv->id, 0, &offset, &size) < 0)
 		return -1;
-	}
 	/* Always map the entire page. */
 	addr = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_SHARED,
 		    priv->ctx->cmd_fd, offset);
@@ -360,29 +364,29 @@ mlx5_vdpa_setup_notify_relay(struct vdpa_priv *priv)
 static int
 mlx5_vdpa_dev_config(int vid)
 {
-    int did;
-    struct vdpa_priv_list *list_elem;
-    struct vdpa_priv *priv;
+	int did;
+	struct vdpa_priv_list *list_elem;
+	struct vdpa_priv *priv;
 
-    did = rte_vhost_get_vdpa_device_id(vid);
-    list_elem = find_priv_resource_by_did(did);
-    if (list_elem == NULL) {
-        DRV_LOG(ERR, "Invalid device id: %d", did);
-        return -1;
-    }
-    priv = list_elem->priv;
-    priv->vid = vid;
-    if (create_pd(priv)) {
-        DRV_LOG(ERR, "Error allocating PD");
-        return -1;
-    }
-    if (mlx5_vdpa_setup_rx(priv)) {
-        DRV_LOG(ERR, "Error setting up RX flow");
-        return -1;
-    }
-    mlx5_vdpa_setup_notify_relay(priv);
-    rte_atomic32_set(&priv->dev_attached, 1);
-    return 0;
+	did = rte_vhost_get_vdpa_device_id(vid);
+	list_elem = find_priv_resource_by_did(did);
+	if (list_elem == NULL) {
+		DRV_LOG(ERR, "Invalid device id: %d", did);
+		return -1;
+	}
+	priv = list_elem->priv;
+	priv->vid = vid;
+	if (create_pd(priv)) {
+		DRV_LOG(ERR, "Error allocating PD");
+		return -1;
+	}
+	if (mlx5_vdpa_setup_rx(priv)) {
+		DRV_LOG(ERR, "Error setting up RX flow");
+		return -1;
+	}
+	mlx5_vdpa_setup_notify_relay(priv);
+	rte_atomic32_set(&priv->dev_attached, 1);
+	return 0;
 }
 
 static int
@@ -407,29 +411,29 @@ mlx5_vdpa_unset_notify_relay(struct vdpa_priv *priv)
 static int
 mlx5_vdpa_dev_close(int vid)
 {
-    int did;
-    struct vdpa_priv_list *list_elem;
-    struct vdpa_priv *priv;
+	int did;
+	struct vdpa_priv_list *list_elem;
+	struct vdpa_priv *priv;
 
-    did = rte_vhost_get_vdpa_device_id(vid);
-    list_elem = find_priv_resource_by_did(did);
-    if (list_elem == NULL) {
-        DRV_LOG(ERR, "Invalid device id: %d", did);
-        return -1;
-    }
-    priv = list_elem->priv;
-    mlx5_vdpa_unset_notify_relay(priv);
-    if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
-        DRV_LOG(ERR, "Error when DEALLOCATING PD");
-        return -1;
-    }
-    priv->pdn = 0;
-    if (mlx5_vdpa_release_rx(priv)) {
-        DRV_LOG(ERR, "Error in releasing RX resources");
-        return -1;
-    }
-    rte_atomic32_set(&priv->dev_attached, 0);
-    return 0;
+	did = rte_vhost_get_vdpa_device_id(vid);
+	list_elem = find_priv_resource_by_did(did);
+	if (list_elem == NULL) {
+		DRV_LOG(ERR, "Invalid device id: %d", did);
+		return -1;
+	}
+	priv = list_elem->priv;
+	mlx5_vdpa_unset_notify_relay(priv);
+	if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
+		DRV_LOG(ERR, "Error when DEALLOCATING PD");
+		return -1;
+	}
+	priv->pdn = 0;
+	if (mlx5_vdpa_release_rx(priv)) {
+		DRV_LOG(ERR, "Error in releasing RX resources");
+		return -1;
+	}
+	rte_atomic32_set(&priv->dev_attached, 0);
+	return 0;
 }
 
 static int
@@ -462,44 +466,46 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 			(MLX5_HCA_CAP_GENERAL << 1) |
 			(MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
 	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
-                                       out, sizeof(out))) {
-	    DRV_LOG(DEBUG, "Failed to Query Current HCA CAP section\n");
-	    return -1;
+					   out, sizeof(out))) {
+		DRV_LOG(DEBUG, "Failed to Query Current HCA CAP section\n");
+		return -1;
 	}
 	cap = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
 	dump_mkey_reported = MLX5_GET(cmd_hca_cap, cap, dump_fill_mkey);
 	if (!dump_mkey_reported) {
-	    DRV_LOG(DEBUG, "dump_fill_mkey is not supported\n");
-	    return -1;
+		DRV_LOG(DEBUG, "dump_fill_mkey is not supported\n");
+		return -1;
 	}
 	/* Query the actual dump key. */
 	MLX5_SET(query_special_contexts_in, in_special, opcode,
 		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
-	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in_special, sizeof(in_special),
-                                       out_special, sizeof(out_special))) {
-	    DRV_LOG(DEBUG, "Failed to Query Special Contexts\n");
+	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in_special,
+					   sizeof(in_special), out_special,
+					   sizeof(out_special))) {
+		DRV_LOG(DEBUG, "Failed to Query Special Contexts\n");
 		return -1;
 	}
 	priv->caps.dump_mkey = MLX5_GET(query_special_contexts_out,
 					out_special,
 					dump_fill_mkey);
 	/*
-	 * TODO (idos): Once we have FW support, exit if not supported (else path)
+	 * TODO (idos): Once we have FW support, exit if not supported
 	 */
 	if (MLX5_GET64(cmd_hca_cap, cap, general_obj_types) &
-		MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ) {
-		 DRV_LOG(DEBUG, "Virtio acceleration supported by the device!\n");
-		 MLX5_SET(query_hca_cap_in, in, op_mod,
-				 (MLX5_HCA_CAP_DEVICE_EMULATION << 1) |
-				 (MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
-		 if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
-		                                    out, sizeof(out))) {
-			 DRV_LOG(DEBUG, "Failed to Query Emulation CAP section\n");
-			 return -1;
-		 }
-		 virtio_net_cap = MLX5_ADDR_OF(device_emulation, cap, virtnet);
-		 priv->caps.max_num_virtqs =
-				 MLX5_GET(virtio_net_cap, virtio_net_cap, max_num_of_virtqs);
+			MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ) {
+		DRV_LOG(DEBUG, "Virtio acceleration supported by the device!\n");
+		MLX5_SET(query_hca_cap_in, in, op_mod,
+			 (MLX5_HCA_CAP_DEVICE_EMULATION << 1) |
+			 (MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
+		if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
+						   out, sizeof(out))) {
+			DRV_LOG(DEBUG, "Failed to Query Emulation CAP section\n");
+			return -1;
+		}
+		virtio_net_cap = MLX5_ADDR_OF(device_emulation, cap, virtnet);
+		priv->caps.max_num_virtqs = MLX5_GET(virtio_net_cap,
+						     virtio_net_cap,
+						     max_num_of_virtqs);
 	} else {
 		DRV_LOG(DEBUG, "Virtio acceleration not supported by the device\n");
 		priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
@@ -509,8 +515,10 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	priv->caps.virtio_protocol_features = MLX5_VDPA_PROTOCOL_FEATURES;
 	DRV_LOG(DEBUG, "Virtio Caps:");
 	DRV_LOG(DEBUG, "	dump_mkey=0x%x ", priv->caps.dump_mkey);
-	DRV_LOG(DEBUG, "	max_num_virtqs=0x%x ", priv->caps.max_num_virtqs);
-	DRV_LOG(DEBUG, "	features_bits=0x%" PRIx64, priv->caps.virtio_net_features);
+	DRV_LOG(DEBUG, "	max_num_virtqs=0x%x ",
+			priv->caps.max_num_virtqs);
+	DRV_LOG(DEBUG, "	features_bits=0x%" PRIx64,
+			priv->caps.virtio_net_features);
 	return 0;
 }
 
@@ -610,7 +618,8 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	}
 	ctx = mlx5_glue->dv_open_device(ibv_match, &devx_attr);
 	if (!ctx) {
-		DRV_LOG(DEBUG, "Failed to open IB device \"%s\"", ibv_match->name);
+		DRV_LOG(DEBUG, "Failed to open IB device \"%s\"",
+			ibv_match->name);
 		rte_errno = errno ? errno : ENODEV;
 		goto error;
 	}
@@ -636,7 +645,7 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	priv->id = rte_vdpa_register_device(&priv->dev_addr,
 					     &mlx5_vdpa_ops);
 	if (priv->id < 0) {
-		DRV_LOG(DEBUG, "Unable to regsiter vDPA device");
+		DRV_LOG(DEBUG, "Unable to register vDPA device");
 		rte_errno = rte_errno ? rte_errno : EINVAL;
 		goto error;
 	}
@@ -777,7 +786,8 @@ static int
 mlx5_glue_init(void)
 {
 	/*
-	 * TODO (shahaf): move it to shared location and make sure glue lib init only once.
+	 * TODO (shahaf): move it to shared location and make sure glue
+	 * lib init only once.
 	 */
 	char glue_path[sizeof(RTE_EAL_PMD_PATH) - 1 + sizeof("-glue")];
 	const char *path[] = {
