@@ -510,7 +510,6 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 		DRV_LOG(DEBUG, "Virtio acceleration not supported by the device\n");
 		priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
 	}
-	priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
 	priv->caps.virtio_net_features = MLX5_VDPA_FEATURES;
 	priv->caps.virtio_protocol_features = MLX5_VDPA_PROTOCOL_FEATURES;
 	DRV_LOG(DEBUG, "Virtio Caps:");
