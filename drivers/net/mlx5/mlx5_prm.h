@@ -972,6 +972,53 @@ struct mlx5_ifc_create_rq_out_bits {
 	u8 reserved_at_60[0x20];
 };
 
+struct mlx5_ifc_rx_hash_field_select_bits {
+	u8 l3_prot_type[0x1];
+	u8 l4_prot_type[0x1];
+	u8 selected_fields[0x1e];
+};
+
+struct mlx5_ifc_tirc_bits {
+	u8 reserved_at_0[0x20];
+	u8 disp_type[0x4];
+	u8 reserved_at_24[0x60];
+	u8 lro_timeout_period_usecs[0x10];
+	u8 lro_enable_mask[0x4];
+	u8 lro_max_ip_payload_size[0x8];
+	u8 reserved_at_a0[0x48];
+	u8 inline_rqn[0x18];
+	u8 rx_hash_symmetric[0x1];
+	u8 reserved_at_101[0x1];
+	u8 tunneled_offload_en[0x1];
+	u8 reserved_at_103[0x5];
+	u8 indirect_table[0x18];
+	u8 rx_hash_fn[0x4];
+	u8 reserved_at_124[0x2];
+	u8 self_lb_block[0x2];
+	u8 transport_domain[0x18];
+	u8 rx_hash_toeplitz_key[10][0x20];
+	struct mlx5_ifc_rx_hash_field_select_bits rx_hash_field_selector_outer;
+	struct mlx5_ifc_rx_hash_field_select_bits rx_hash_field_selector_inner;
+	u8 reserved_at_2c0[0x4c0];
+};
+
+struct mlx5_ifc_create_tir_in_bits {
+	u8 opcode[0x10];
+	u8 reserved_at_10[0x20];
+	u8 op_mod[0x10];
+	u8 reserved_at_40[0xc0];
+	struct mlx5_ifc_tirc_bits ctx;
+};
+
+struct mlx5_ifc_create_tir_out_bits {
+	u8 status[0x8];
+	u8 reserved_at_8[0x18];
+	u8 syndrome[0x20];
+	u8 reserved_at_40[0x8];
+	u8 tirn[0x18];
+	u8 reserved_at_60[0x20];
+};
+
 struct mlx5_ifc_alloc_pd_in_bits {
 	u8 opcode[0x10];
 	u8 reserved_at_10[0x20];
@@ -1028,6 +1075,7 @@ enum {
 	MLX5_CMD_OP_CREATE_MKEY            = 0x200,
 	MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS = 0x203,
 	MLX5_CMD_OP_ALLOC_PD               = 0x800,
+	MLX5_CMD_OP_CREATE_TIR             = 0x900,
 	MLX5_CMD_OP_CREATE_RQ              = 0x908,
 	MLX5_CMD_OP_CREATE_GENERAL_OBJECT  = 0xa00,
 	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT  = 0xa01,
@@ -1055,6 +1103,17 @@ enum {
 enum {
 	MLX5_VIRTQ_OBJ_QUEUE_TYPE_RX = 0,
 	MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX = 1,
+};
+
+enum {
+	MLX5_TIRC_DISP_TYPE_DIRECT   = 0x0,
+	MLX5_TIRC_DISP_TYPE_INDIRECT = 0x1,
+};
+
+enum {
+	MLX5_RX_HASH_FN_NONE           = 0x0,
+	MLX5_RX_HASH_FN_INVERTED_XOR8  = 0x1,
+	MLX5_RX_HASH_FN_TOEPLITZ       = 0x2,
 };
 
 /* CQE format mask. */
