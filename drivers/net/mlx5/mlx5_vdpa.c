@@ -165,15 +165,33 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 	return 0;
 }
 
-static int mlx5_vdpa_setup_rx(struct vdpa_priv *priv)
+/*
+ * According to VIRTIO_NET Spec the virtqueues index identity its type by:
+ * 0 receiveq1
+ * 1 transmitq1
+ * ...
+ * 2(N-1) receiveqN
+ * 2(N-1)+1 transmitqN
+ * 2N controlq
+ */
+static bool is_virtq_recvq(int virtq_index, int nr_vring)
+{
+	if (virtq_index % 2 == 0 && virtq_index != nr_vring - 1)
+		return true;
+	return false;
+}
+
+static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 {
 	int i, nr_vring;
 	struct rte_vhost_vring vq;
 
 	nr_vring = rte_vhost_get_vring_num(priv->vid);
+	/* TODO(idos): Remove when have MQ support */
+	assert(nr_vring == 2);
 	for (i = 0; i < nr_vring; i++) {
-		if (i == 0 || i % 2 == 0) {
-			rte_vhost_get_vhost_vring(priv->vid, i, &vq);
+		rte_vhost_get_vhost_vring(priv->vid, i, &vq);
+		if (is_virtq_recvq(i, nr_vring)) {
 			if (create_rq(priv, vq.size, i)) {
 				DRV_LOG(ERR,
 					"Create RQ failed for Virtqueue %d",
@@ -189,13 +207,13 @@ static int mlx5_vdpa_setup_rx(struct vdpa_priv *priv)
 	return 0;
 }
 
-static int mlx5_vdpa_release_rx(struct vdpa_priv *priv)
+static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 {
 	struct mlx5dv_devx_obj *rq;
 	int i;
 
 	for (i = 0; i < priv->nr_vring; i++) {
-		if (i == 0 || i % 2 == 0) {
+		if (is_virtq_recvq(i, priv->nr_vring)) {
 			rq = priv->virtq[i].rq_obj;
 			if (!rq)
 				continue;
@@ -695,8 +713,8 @@ mlx5_vdpa_dev_config(int vid)
 		DRV_LOG(ERR, "Error DMA mapping VM memory");
 		return -1;
 	}
-	if (mlx5_vdpa_setup_rx(priv)) {
-		DRV_LOG(ERR, "Error setting up RX flow");
+	if (mlx5_vdpa_setup_virtqs(priv)) {
+		DRV_LOG(ERR, "Error setting up Virtqueues");
 		return -1;
 	}
 	mlx5_vdpa_setup_notify_relay(priv);
@@ -738,8 +756,8 @@ mlx5_vdpa_dev_close(int vid)
 	}
 	priv = list_elem->priv;
 	mlx5_vdpa_unset_notify_relay(priv);
-	if (mlx5_vdpa_release_rx(priv)) {
-		DRV_LOG(ERR, "Error in releasing RX resources");
+	if (mlx5_vdpa_release_virtqs(priv)) {
+		DRV_LOG(ERR, "Error in releasing Virtqueue resources");
 		return -1;
 	}
 	if (mlx5_vdpa_release_mr(priv)) {
