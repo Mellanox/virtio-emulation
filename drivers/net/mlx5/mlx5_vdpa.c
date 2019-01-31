@@ -156,7 +156,7 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 	rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 					       out, sizeof(out));
 	if (!rq_obj) {
-		DRV_LOG(DEBUG, "Failed to CREATE_RQ through Devx\n");
+		DRV_LOG(DEBUG, "Failed to CREATE_RQ through Devx");
 		return -1;
 	}
 	priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
@@ -486,7 +486,7 @@ mlx5_vdpa_notify_relay(void *arg)
 		if (nfds < 0) {
 			if (errno == EINTR)
 				continue;
-			DRV_LOG(ERR, "epoll_wait return fail\n");
+			DRV_LOG(ERR, "epoll_wait return fail");
 			return NULL;
 		}
 		for (i = 0; i < nfds; i++) {
@@ -803,13 +803,13 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 			(MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
 	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
 					   out, sizeof(out))) {
-		DRV_LOG(DEBUG, "Failed to Query Current HCA CAP section\n");
+		DRV_LOG(DEBUG, "Failed to Query Current HCA CAP section");
 		return -1;
 	}
 	cap = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
 	dump_mkey_reported = MLX5_GET(cmd_hca_cap, cap, dump_fill_mkey);
 	if (!dump_mkey_reported) {
-		DRV_LOG(DEBUG, "dump_fill_mkey is not supported\n");
+		DRV_LOG(DEBUG, "dump_fill_mkey is not supported");
 		return -1;
 	}
 	/* Query the actual dump key. */
@@ -818,7 +818,7 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in_special,
 					   sizeof(in_special), out_special,
 					   sizeof(out_special))) {
-		DRV_LOG(DEBUG, "Failed to Query Special Contexts\n");
+		DRV_LOG(DEBUG, "Failed to Query Special Contexts");
 		return -1;
 	}
 	priv->caps.dump_mkey = MLX5_GET(query_special_contexts_out,
@@ -829,13 +829,13 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 	 */
 	if (MLX5_GET64(cmd_hca_cap, cap, general_obj_types) &
 			MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ) {
-		DRV_LOG(DEBUG, "Virtio acceleration supported by the device!\n");
+		DRV_LOG(DEBUG, "Virtio acceleration supported by the device!");
 		MLX5_SET(query_hca_cap_in, in, op_mod,
 			 (MLX5_HCA_CAP_DEVICE_EMULATION << 1) |
 			 (MLX5_HCA_CAP_OPMOD_GET_CUR & 0x1));
 		if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
 						   out, sizeof(out))) {
-			DRV_LOG(DEBUG, "Failed to Query Emulation CAP section\n");
+			DRV_LOG(DEBUG, "Failed to Query Emulation CAP section");
 			return -1;
 		}
 		virtio_net_cap = MLX5_ADDR_OF(device_emulation, cap, virtnet);
@@ -843,7 +843,7 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 						     virtio_net_cap,
 						     max_num_of_virtqs);
 	} else {
-		DRV_LOG(DEBUG, "Virtio acceleration not supported by the device\n");
+		DRV_LOG(DEBUG, "Virtio acceleration not supported by the device");
 		priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
 	}
 	priv->caps.virtio_net_features = MLX5_VDPA_FEATURES;
@@ -945,7 +945,7 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	}
 	if (!ibv_match) {
 		DRV_LOG(DEBUG, "No matching IB device for PCI slot "
-			"%" SCNx32 ":%" SCNx8 ":%" SCNx8 ".%" SCNx8 "\n",
+			"%" SCNx32 ":%" SCNx8 ":%" SCNx8 ".%" SCNx8,
 			pci_dev->addr.domain, pci_dev->addr.bus,
 			pci_dev->addr.devid, pci_dev->addr.function);
 		rte_errno = ENOENT;
