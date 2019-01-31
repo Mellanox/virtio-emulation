@@ -55,6 +55,11 @@ struct virtq_info {
 	struct mlx5dv_devx_obj *rq_obj;
 };
 
+struct mlx5_vdpa_steer_info {
+	uint32_t               tirn;
+	struct mlx5dv_devx_obj *tir_obj;
+};
+
 struct mlx5_vdpa_relay_thread {
 	int       epfd; /* Epoll fd for relay thread. */
 	pthread_t tid; /* Notify thread id. */
@@ -105,6 +110,7 @@ struct vdpa_priv {
 	struct rte_vdpa_dev_addr      dev_addr;
 	struct mlx5_vdpa_caps         caps;
 	struct mlx5_vdpa_relay_thread relay;
+	struct mlx5_vdpa_steer_info   rx_steer_info;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
 	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr_list) mr_list;
 };
@@ -181,6 +187,60 @@ static bool is_virtq_recvq(int virtq_index, int nr_vring)
 	return false;
 }
 
+static int create_tir(struct vdpa_priv *priv)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_tir_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_tir_out)] = {0};
+	struct mlx5dv_devx_obj *tir_obj = NULL;
+	void *tirc = NULL;
+
+	MLX5_SET(create_tir_in, in, opcode, MLX5_CMD_OP_CREATE_TIR);
+	tirc = MLX5_ADDR_OF(create_tir_in, in, ctx);
+	MLX5_SET(tirc, tirc, disp_type, MLX5_TIRC_DISP_TYPE_DIRECT);
+	/*
+	 * For Now we are creating a simple direct TIR that points to
+	 * the RQ for Virtqueue index 0 only.
+	 * This is because we are working with a single RX Virtqueue
+	 * TODO(idos): Change this to RSS and RQT once we support MQ.
+	 */
+	MLX5_SET(tirc, tirc, inline_rqn, priv->virtq[0].rqn);
+	MLX5_SET(tirc, tirc, rx_hash_fn, MLX5_RX_HASH_FN_NONE);
+	tir_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+						out, sizeof(out));
+	if (!tir_obj) {
+		DRV_LOG(DEBUG, "Failed to CREATE_TIR through Devx");
+		return -1;
+	}
+	priv->rx_steer_info.tirn = MLX5_GET(create_tir_out, out, tirn);
+	priv->rx_steer_info.tir_obj = tir_obj;
+	return 0;
+}
+
+static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
+{
+	if (create_tir(priv)) {
+		DRV_LOG(ERR, "Create TIR failed");
+		/* TODO(idos): Remove this when FW supports */
+		DRV_LOG(INFO, "Continuing without TIR");
+	}
+	return 0;
+}
+
+static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
+{
+	struct mlx5dv_devx_obj *tir;
+
+	tir = priv->rx_steer_info.tir_obj;
+	if (tir && mlx5_glue->dv_devx_obj_destroy(tir)) {
+		DRV_LOG(ERR, "Error Destroying TIR");
+		return -1;
+	}
+	priv->rx_steer_info.tir_obj = NULL;
+	priv->rx_steer_info.tirn = 0;
+	return 0;
+}
+
+
 static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 {
 	int i, nr_vring;
@@ -204,6 +264,10 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 		}
 	}
 	priv->nr_vring = i;
+	if (mlx5_vdpa_setup_rx_steering(priv)) {
+		DRV_LOG(ERR, "Create Steering for RX failed");
+		return -1;
+	}
 	return 0;
 }
 
@@ -224,6 +288,10 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 			priv->virtq[i].rq_obj = NULL;
 			priv->virtq[i].rqn = 0;
 		}
+	}
+	if (mlx5_vdpa_release_rx_steer(priv)) {
+		DRV_LOG(ERR, "Error Releasing RX steering resources");
+		return -1;
 	}
 	return 0;
 }
