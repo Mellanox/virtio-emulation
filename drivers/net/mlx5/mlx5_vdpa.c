@@ -152,6 +152,8 @@ static int mlx5_vdpa_release_rx(struct vdpa_priv *priv)
 	for (i = 0; i < priv->nr_vring; i++) {
 		if (i == 0 || i % 2 == 0) {
 			rq = priv->virtq[i].rq_obj;
+			if (!rq)
+				continue;
 			if (mlx5_glue->dv_devx_obj_destroy(rq)) {
 				DRV_LOG(ERR, "Error DESTROY)RQ VirtQ %d", i);
 				return -1;
