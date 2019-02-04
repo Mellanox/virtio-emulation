@@ -1216,10 +1216,4 @@ struct mlx5_ifc_create_mkey_in_bits {
 	struct mlx5_ifc_klm_bits klm_pas_mtt[0];
 };
 
-struct mlx5_klm {
-	uint32_t byte_count;
-	uint32_t mkey;
-	uint64_t address;
-};
-
 #endif /* RTE_PMD_MLX5_PRM_H_ */
