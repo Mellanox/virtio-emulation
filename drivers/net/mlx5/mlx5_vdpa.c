@@ -56,7 +56,7 @@ struct virtq_info {
 };
 
 struct mlx5_vdpa_relay_thread {
-	int       epfd; /* Epoll fd for realy thread. */
+	int       epfd; /* Epoll fd for relay thread. */
 	pthread_t tid; /* Notify thread id. */
 	void      *notify_base; /* Notify base address. */
 };
@@ -198,7 +198,7 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 					i);
 				/* TODO(idos): Remove this when FW supports */
 				DRV_LOG(INFO,
-					"Contiuing without RQ of Virtqueue %d",
+					"Continuing without RQ of Virtqueue %d",
 					i);
 			}
 		}
@@ -218,7 +218,7 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 			if (!rq)
 				continue;
 			if (mlx5_glue->dv_devx_obj_destroy(rq)) {
-				DRV_LOG(ERR, "Error DESTROY)RQ VirtQ %d", i);
+				DRV_LOG(ERR, "Error DESTROY_RQ VirtQ %d", i);
 				return -1;
 			}
 			priv->virtq[i].rq_obj = NULL;
@@ -672,14 +672,14 @@ mlx5_vdpa_release_mr(struct vdpa_priv *priv)
 		next = SLIST_NEXT(entry, next);
 		if (mlx5_glue->
 			dv_devx_obj_destroy(entry->vdpa_query_mr->mkey->obj)) {
-			DRV_LOG(ERR, "Error when destoying Mkey objecy");
+			DRV_LOG(ERR, "Error when destroying Mkey object");
 			return -1;
 		}
 		rte_free(entry->vdpa_query_mr->mkey);
 		if (!entry->vdpa_query_mr->is_indirect) {
 			if (mlx5_glue->
 				dv_devx_umem_dereg(entry->vdpa_query_mr->umem)) {
-				DRV_LOG(ERR, "Error when desregistering Umem");
+				DRV_LOG(ERR, "Error when deregistering Umem");
 				return -1;
 			}
 		}
@@ -871,7 +871,7 @@ mlx5_vdpa_get_device_fd(int vid)
 		goto error;
 	return list->priv->ctx->cmd_fd;
 error:
-	DRV_LOG(DEBUG, "Invliad vDPA device id %d", vid);
+	DRV_LOG(DEBUG, "Invalid vDPA device id %d", vid);
 	return -1;
 }
 
