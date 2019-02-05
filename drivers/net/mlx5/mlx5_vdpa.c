@@ -19,6 +19,7 @@
 #include "mlx5_utils.h"
 #include "mlx5.h"
 #include "mlx5_prm.h"
+#include "mlx5_flow.h"
 
 #ifndef NOMINMAX
 #ifndef max
@@ -58,6 +59,7 @@ struct virtq_info {
 struct mlx5_vdpa_steer_info {
 	uint32_t               tirn;
 	struct mlx5dv_devx_obj *tir_obj;
+	struct ibv_flow        *promisc_flow;
 };
 
 struct mlx5_vdpa_relay_thread {
@@ -216,12 +218,60 @@ static int create_tir(struct vdpa_priv *priv)
 	return 0;
 }
 
+static int mlx5_vdpa_enable_promisc(struct vdpa_priv *priv)
+{
+	int ret = 0;
+	struct ibv_flow *promisc_flow = NULL;
+	struct mlx5dv_flow_matcher *matcher = NULL;
+	struct mlx5_flow_dv_match_params empty_val = {
+		.size = sizeof(empty_val.buf),
+	};
+	struct mlx5dv_flow_matcher_attr dv_attr = {
+		.type = IBV_FLOW_ATTR_NORMAL,
+		.match_mask = (void *)&empty_val,
+	};
+	struct mlx5dv_flow_action_attr action_attr = {
+		.type = MLX5DV_FLOW_ACTION_DEST_DEVX,
+		.obj = priv->rx_steer_info.tir_obj,
+	};
+	matcher = mlx5_glue->dv_create_flow_matcher(priv->ctx, &dv_attr);
+	if (!matcher) {
+		DRV_LOG(ERR, "Error creating the dv flow matcher");
+		return -1;
+	}
+	promisc_flow = mlx5_glue->dv_create_flow(matcher,
+						 (void *)&empty_val, 1,
+						 &action_attr);
+	if (!promisc_flow) {
+		DRV_LOG(ERR, "Error creating the dv promiscuous flow");
+		ret = -1;
+		goto exit;
+	}
+	priv->rx_steer_info.promisc_flow = promisc_flow;
+exit:
+	if (mlx5_glue->dv_destroy_flow_matcher(matcher))
+		DRV_LOG(INFO, "Error destroying the matcher");
+	return ret;
+}
+
 static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
 {
 	if (create_tir(priv)) {
 		DRV_LOG(ERR, "Create TIR failed");
 		/* TODO(idos): Remove this when FW supports */
 		DRV_LOG(INFO, "Continuing without TIR");
+		/*
+		 * We can't create a flow with action
+		 * MLX5DV_FLOW_ACTION_DEST_DEVX if the TIR DEVX object is NULL
+		 * the mlx5dv_flow_create doesn't check the obj and we get
+		 * segmentation fault.
+		 * TODO(idos): Remove when the TIR is created successfully
+		 */
+		return 0;
+	}
+	if (mlx5_vdpa_enable_promisc(priv)) {
+		DRV_LOG(ERR, "Promiscuous flow rule creation failed");
+		return -1;
 	}
 	return 0;
 }
@@ -229,7 +279,14 @@ static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
 static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 {
 	struct mlx5dv_devx_obj *tir;
+	struct ibv_flow *flow;
 
+	flow = priv->rx_steer_info.promisc_flow;
+	if (flow && mlx5_glue->destroy_flow(flow)) {
+		DRV_LOG(ERR, "Error Destroying Flow");
+		return -1;
+	}
+	priv->rx_steer_info.promisc_flow = NULL;
 	tir = priv->rx_steer_info.tir_obj;
 	if (tir && mlx5_glue->dv_devx_obj_destroy(tir)) {
 		DRV_LOG(ERR, "Error Destroying TIR");
