@@ -31,7 +31,6 @@
 
 /** Driver Static values in the absence of device VIRTIO emulation support */
 #define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
-#define SPECIAL_CQ_FOR_VDPA               0
 
 #define MLX5_VDPA_FEATURES ((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
 			    (1ULL << VIRTIO_F_VERSION_1))
@@ -115,6 +114,14 @@ struct vdpa_priv {
 	struct mlx5_vdpa_steer_info   rx_steer_info;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
 	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr_list) mr_list;
+	/*
+	 *  Following objects may be temporary (depending on FW decision)
+	 *  They are here mostly for verifying the steering works.
+	 *  Please put non-temporary fields above.
+	 *  TODO(idos): Remove when decision on FW development is taken
+	 */
+	uint32_t                      cqn;
+	struct ibv_cq		      *cq;
 };
 
 struct vdpa_priv_list {
@@ -146,6 +153,29 @@ static int create_pd(struct vdpa_priv *priv)
 	return 0;
 }
 
+static int create_cq(struct vdpa_priv *priv)
+{
+	struct mlx5dv_obj dv_obj;
+	struct mlx5dv_cq dv_cq;
+	struct ibv_cq *cq;
+
+	cq = mlx5_glue->create_cq(priv->ctx, 1, NULL, NULL, 0);
+	if (!cq) {
+		DRV_LOG(ERR, "ibv_cq creation failed");
+		return -1;
+	}
+	dv_obj.cq.in = cq;
+	dv_obj.cq.out = &dv_cq;
+	if (mlx5_glue->dv_init_obj(&dv_obj, MLX5DV_OBJ_CQ)) {
+		DRV_LOG(ERR, "DV init_obj for CQ failed");
+		return -1;
+	}
+	priv->cqn = dv_cq.cqn;
+	priv->cq = cq;
+	DRV_LOG(DEBUG, "Success creating CQ 0x%x", priv->cqn);
+	return 0;
+}
+
 static int
 create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 {
@@ -157,7 +187,7 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 
 	MLX5_SET(create_rq_in, in, opcode, MLX5_CMD_OP_CREATE_RQ);
 	rqc = MLX5_ADDR_OF(create_rq_in, in, ctx);
-	MLX5_SET(rqc, rqc, cqn, SPECIAL_CQ_FOR_VDPA);
+	MLX5_SET(rqc, rqc, cqn, priv->cqn);
 	wq = MLX5_ADDR_OF(rqc, rqc, wq);
 	/* TODO(idos): Check log_wq_size according to device CAP */
 	MLX5_SET(wq, wq, log_wq_sz, rte_log2_u32(qsize));
@@ -309,6 +339,10 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	nr_vring = rte_vhost_get_vring_num(priv->vid);
 	/* TODO(idos): Remove when have MQ support */
 	assert(nr_vring == 2);
+	if (create_cq(priv)) {
+		DRV_LOG(ERR, "Create CQ failed");
+		return -1;
+	}
 	for (i = 0; i < nr_vring; i++) {
 		rte_vhost_get_vhost_vring(priv->vid, i, &vq);
 		if (is_virtq_recvq(i, nr_vring)) {
@@ -353,6 +387,12 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 			priv->virtq[i].rqn = 0;
 		}
 	}
+	if (mlx5_glue->destroy_cq(priv->cq)) {
+		DRV_LOG(ERR, "Error destroying CQ");
+		return -1;
+	}
+	priv->cqn = 0;
+	priv->cq = NULL;
 	return 0;
 }
 
