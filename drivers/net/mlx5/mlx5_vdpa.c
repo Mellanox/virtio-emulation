@@ -333,6 +333,10 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 	struct mlx5dv_devx_obj *rq;
 	int i;
 
+	if (mlx5_vdpa_release_rx_steer(priv)) {
+		DRV_LOG(ERR, "Error Releasing RX steering resources");
+		return -1;
+	}
 	for (i = 0; i < priv->nr_vring; i++) {
 		if (is_virtq_recvq(i, priv->nr_vring)) {
 			rq = priv->virtq[i].rq_obj;
@@ -345,10 +349,6 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 			priv->virtq[i].rq_obj = NULL;
 			priv->virtq[i].rqn = 0;
 		}
-	}
-	if (mlx5_vdpa_release_rx_steer(priv)) {
-		DRV_LOG(ERR, "Error Releasing RX steering resources");
-		return -1;
 	}
 	return 0;
 }
