@@ -65,6 +65,7 @@ struct mlx5_vdpa_steer_info {
 	uint32_t               tirn;
 	struct mlx5dv_devx_obj *tir_obj;
 	struct ibv_flow        *promisc_flow;
+	struct mlx5dv_flow_matcher *matcher;
 };
 
 struct mlx5_vdpa_relay_thread {
@@ -307,7 +308,6 @@ static int create_tir(struct vdpa_priv *priv)
 
 static int mlx5_vdpa_enable_promisc(struct vdpa_priv *priv)
 {
-	int ret = 0;
 	struct ibv_flow *promisc_flow = NULL;
 	struct mlx5dv_flow_matcher *matcher = NULL;
 	struct mlx5_flow_dv_match_params empty_val = {
@@ -331,15 +331,16 @@ static int mlx5_vdpa_enable_promisc(struct vdpa_priv *priv)
 						 &action_attr);
 	if (!promisc_flow) {
 		DRV_LOG(ERR, "Error creating the dv promiscuous flow");
-		ret = -1;
 		goto exit;
 	}
+	priv->rx_steer_info.matcher = matcher;
 	priv->rx_steer_info.promisc_flow = promisc_flow;
 	DRV_LOG(DEBUG, "Success creating Promiscuous flow rule");
+	return 0;
 exit:
 	if (mlx5_glue->dv_destroy_flow_matcher(matcher))
 		DRV_LOG(INFO, "Error destroying the matcher");
-	return ret;
+	return -1;
 }
 
 static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
@@ -357,6 +358,7 @@ static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
 
 static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 {
+	struct mlx5dv_flow_matcher *matcher;
 	struct mlx5dv_devx_obj *tir;
 	struct ibv_flow *flow;
 
@@ -366,6 +368,12 @@ static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 		return -1;
 	}
 	priv->rx_steer_info.promisc_flow = NULL;
+	matcher = priv->rx_steer_info.matcher;
+	if (matcher && mlx5_glue->dv_destroy_flow_matcher(matcher)) {
+		DRV_LOG(ERR, "Error Destroying Flow Matcher");
+		return -1;
+	}
+	priv->rx_steer_info.matcher = NULL;
 	tir = priv->rx_steer_info.tir_obj;
 	if (tir && mlx5_glue->dv_devx_obj_destroy(tir)) {
 		DRV_LOG(ERR, "Error Destroying TIR");
