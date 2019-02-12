@@ -1093,11 +1093,11 @@ enum {
 };
 
 enum {
-	MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ = (1ULL << 10),
+	MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ = (1ULL << 13),
 };
 
 enum {
-	MLX5_OBJ_TYPE_VIRTQ = 0x000a,
+	MLX5_OBJ_TYPE_VIRTQ = 0x000d,
 };
 
 enum {
