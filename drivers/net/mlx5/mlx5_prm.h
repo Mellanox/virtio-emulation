@@ -956,7 +956,7 @@ struct mlx5_ifc_rqc_bits {
 };
 
 struct mlx5_ifc_create_rq_in_bits {
-	u8 opcode[0x20];
+	u8 opcode[0x10];
 	u8 reserved_at_10[0x20];
 	u8 op_mod[0x10];
 	u8 reserved_at_40[0xc0];

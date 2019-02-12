@@ -159,7 +159,7 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 	MLX5_SET(rqc, rqc, cqn, SPECIAL_CQ_FOR_VDPA);
 	wq = MLX5_ADDR_OF(rqc, rqc, wq);
 	/* TODO(idos): Check log_wq_size according to device CAP */
-	MLX5_SET(wq, wq, log_wq_sz, qsize);
+	MLX5_SET(wq, wq, log_wq_sz, rte_log2_u32(qsize));
 	MLX5_SET(wq, wq, pd, priv->pdn);
 	rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 					       out, sizeof(out));
