@@ -59,6 +59,8 @@ struct virtq_info {
 	struct mlx5dv_devx_obj  *rq_obj;
 	struct mlx5dv_devx_umem *rq_buf_umem;
 	struct mlx5dv_devx_umem *rq_dbr_umem;
+	uint32_t                virtq_id;
+	struct mlx5dv_devx_obj  *virtq_obj;
 };
 
 struct mlx5_vdpa_steer_info {
@@ -111,6 +113,7 @@ struct vdpa_priv {
 	int                           id; /* vDPA device id. */
 	int                           vid; /* virtio_net driver id */
 	uint32_t                      pdn; /* PD number */
+	uint32_t                      gpa_mkey_index;
 	uint16_t                      nr_vring;
 	struct mlx5dv_devx_obj        *pd_obj; /* PD object handler */
 	rte_atomic32_t                dev_attached;
@@ -343,6 +346,96 @@ exit:
 	return -1;
 }
 
+/* TODO(idos): Move this to a shared location with ifcvf_vdpa driver */
+static uint64_t hva_to_gpa(int vid, uint64_t hva)
+{
+	struct rte_vhost_memory *mem = NULL;
+	struct rte_vhost_mem_region *reg;
+	uint32_t i;
+	uint64_t gpa = 0;
+
+	if (rte_vhost_get_mem_table(vid, &mem) < 0)
+		goto exit;
+	for (i = 0; i < mem->nregions; i++) {
+		reg = &mem->regions[i];
+		if (hva >= reg->host_user_addr &&
+		    hva < reg->host_user_addr + reg->size) {
+			gpa = hva - reg->host_user_addr + reg->guest_phys_addr;
+			break;
+		}
+	}
+exit:
+	if (mem)
+		free(mem);
+	return gpa;
+}
+
+static int
+create_split_virtq(struct vdpa_priv *priv, int index,
+		   struct rte_vhost_vring *vq)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_virtq_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(general_obj_out_cmd_hdr)] = {0};
+	struct mlx5dv_devx_obj *virtq_obj = NULL;
+	void *virtq = NULL;
+	void *hdr = NULL;
+	uint64_t gpa;
+
+	hdr = MLX5_ADDR_OF(create_virtq_in, in, hdr);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, opcode,
+		 MLX5_CMD_OP_CREATE_GENERAL_OBJECT);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_type, MLX5_OBJ_TYPE_VIRTQ);
+	virtq = MLX5_ADDR_OF(create_virtq_in, in, virtq);
+	if (is_virtq_recvq(index, priv->nr_vring)) {
+		MLX5_SET(virtq, virtq, queue_type,
+			 MLX5_VIRTQ_OBJ_QUEUE_TYPE_RX);
+		MLX5_SET(virtq, virtq, qnum, priv->virtq[index].rqn);
+	} else {
+		MLX5_SET(virtq, virtq, queue_type,
+			  MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX);
+		/* TODO(liel): Please assign here the SQN to qnum */
+	}
+	gpa = hva_to_gpa(priv->vid, (uint64_t)(uintptr_t)vq->desc);
+	if (!gpa) {
+		DRV_LOG(ERR, "Fail to get GPA for descriptor ring");
+		return -1;
+	}
+	MLX5_SET64(virtq, virtq, desc_addr, gpa);
+	gpa = hva_to_gpa(priv->vid, (uint64_t)(uintptr_t)vq->used);
+	if (!gpa) {
+		DRV_LOG(ERR, "Fail to get GPA for used ring");
+		return -1;
+	}
+	MLX5_SET64(virtq, virtq, used_addr, gpa);
+	gpa = hva_to_gpa(priv->vid, (uint64_t)(uintptr_t)vq->avail);
+	if (!gpa) {
+		DRV_LOG(ERR, "Fail to get GPA for available ring");
+		return -1;
+	}
+	MLX5_SET64(virtq, virtq, available_addr, gpa);
+	MLX5_SET(virtq, virtq, queue_size, vq->size);
+	MLX5_SET(virtq, virtq, data_mkey, priv->gpa_mkey_index);
+	/*
+	 * For now we use the same gpa mkey for both ctrl and data
+	 * TODO(idos): When Live migration support is added, need
+	 * to create another hva-based mkey and modify the virtq
+	 * ctrl_mkey field to it.
+	 */
+	MLX5_SET(virtq, virtq, ctrl_mkey, priv->gpa_mkey_index);
+	virtq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+						  out, sizeof(out));
+	if (!virtq_obj) {
+		DRV_LOG(DEBUG, "Failed to create VIRTQ General Obj DEVX");
+		return -1;
+	}
+	priv->virtq[index].virtq_id = MLX5_GET(general_obj_out_cmd_hdr, out,
+					       obj_id);
+	priv->virtq[index].virtq_obj = virtq_obj;
+	DRV_LOG(DEBUG, "Success creating VIRTQ 0x%x",
+		priv->virtq[index].virtq_id);
+	return 0;
+}
+
 static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
 {
 	if (create_tir(priv)) {
@@ -393,6 +486,7 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	nr_vring = rte_vhost_get_vring_num(priv->vid);
 	/* TODO(idos): Remove when have MQ support */
 	assert(nr_vring == 2);
+	priv->nr_vring = nr_vring;
 	if (create_cq(priv)) {
 		DRV_LOG(ERR, "Create CQ failed");
 		return -1;
@@ -407,8 +501,12 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 				return -1;
 			}
 		}
+		if (create_split_virtq(priv, i, &vq)) {
+			DRV_LOG(ERR, "Create VIRTQ general obj failed");
+			/* TODO(idos): Remove and fail when FW supports */
+			DRV_LOG(INFO, "Still no FW support, continuing..");
+		}
 	}
-	priv->nr_vring = i;
 	if (mlx5_vdpa_setup_rx_steering(priv)) {
 		DRV_LOG(ERR, "Create Steering for RX failed");
 		return -1;
@@ -419,6 +517,7 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 {
 	struct mlx5dv_devx_umem *umem;
+	struct mlx5dv_devx_obj *virtq;
 	struct mlx5dv_devx_obj *rq;
 	int i;
 
@@ -427,6 +526,11 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 		return -1;
 	}
 	for (i = 0; i < priv->nr_vring; i++) {
+		virtq = priv->virtq[i].virtq_obj;
+		if (virtq)
+			mlx5_glue->dv_devx_obj_destroy(virtq);
+		priv->virtq[i].virtq_obj = NULL;
+		priv->virtq[i].virtq_id = 0;
 		if (is_virtq_recvq(i, priv->nr_vring)) {
 			rq = priv->virtq[i].rq_obj;
 			if (rq && mlx5_glue->dv_devx_obj_destroy(rq)) {
@@ -884,6 +988,7 @@ mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 	entry->is_indirect = 1;
 	list_elem->vdpa_query_mr = entry;
 	SLIST_INSERT_HEAD(&priv->mr_list, list_elem, next);
+	priv->gpa_mkey_index = entry->mkey->key;
 	return 0;
 error:
 	if (list_elem)
