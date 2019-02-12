@@ -142,6 +142,7 @@ static int create_pd(struct vdpa_priv *priv)
 	}
 	priv->pdn = MLX5_GET(alloc_pd_out, out, pd);
 	priv->pd_obj = pd;
+	DRV_LOG(DEBUG, "Success creating PD 0x%x", priv->pdn);
 	return 0;
 }
 
@@ -169,7 +170,7 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 	}
 	priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
 	priv->virtq[idx].rq_obj = rq_obj;
-
+	DRV_LOG(DEBUG, "Success creating RQ 0x%x", priv->virtq[idx].rqn);
 	return 0;
 }
 
@@ -215,6 +216,7 @@ static int create_tir(struct vdpa_priv *priv)
 	}
 	priv->rx_steer_info.tirn = MLX5_GET(create_tir_out, out, tirn);
 	priv->rx_steer_info.tir_obj = tir_obj;
+	DRV_LOG(DEBUG, "Success creating TIR 0x%x", priv->rx_steer_info.tirn);
 	return 0;
 }
 
@@ -248,6 +250,7 @@ static int mlx5_vdpa_enable_promisc(struct vdpa_priv *priv)
 		goto exit;
 	}
 	priv->rx_steer_info.promisc_flow = promisc_flow;
+	DRV_LOG(DEBUG, "Success creating Promiscuous flow rule");
 exit:
 	if (mlx5_glue->dv_destroy_flow_matcher(matcher))
 		DRV_LOG(INFO, "Error destroying the matcher");
