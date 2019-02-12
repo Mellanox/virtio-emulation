@@ -31,6 +31,8 @@
 
 /** Driver Static values in the absence of device VIRTIO emulation support */
 #define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
+#define MLX5_VDPA_LOG_RQ_STRIDE           5
+#define MLX5_VDPA_DBR_RQ_SIZE             8
 
 #define MLX5_VDPA_FEATURES ((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
 			    (1ULL << VIRTIO_F_VERSION_1))
@@ -51,8 +53,12 @@ struct mlx5_vdpa_caps {
 };
 
 struct virtq_info {
-	uint32_t               rqn;
-	struct mlx5dv_devx_obj *rq_obj;
+	uint32_t                rqn;
+	void                    *rq_buf;
+	void                    *dbr_buf;
+	struct mlx5dv_devx_obj  *rq_obj;
+	struct mlx5dv_devx_umem *rq_buf_umem;
+	struct mlx5dv_devx_umem *rq_dbr_umem;
 };
 
 struct mlx5_vdpa_steer_info {
@@ -181,27 +187,76 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 {
 	uint32_t in[MLX5_ST_SZ_DW(create_rq_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(create_rq_out)] = {0};
+	struct mlx5dv_devx_umem *buf_umem = NULL;
+	struct mlx5dv_devx_umem *dbr_umem = NULL;
 	struct mlx5dv_devx_obj *rq_obj = NULL;
+	void *rq_buf = NULL;
+	void *dbrec = NULL;
 	void *rqc = NULL;
 	void *wq = NULL;
+	int wq_sz;
 
 	MLX5_SET(create_rq_in, in, opcode, MLX5_CMD_OP_CREATE_RQ);
 	rqc = MLX5_ADDR_OF(create_rq_in, in, ctx);
 	MLX5_SET(rqc, rqc, cqn, priv->cqn);
 	wq = MLX5_ADDR_OF(rqc, rqc, wq);
 	/* TODO(idos): Check log_wq_size according to device CAP */
+	wq_sz = qsize * (1 << MLX5_VDPA_LOG_RQ_STRIDE);
+	MLX5_SET(wq, wq, log_wq_stride, MLX5_VDPA_LOG_RQ_STRIDE);
 	MLX5_SET(wq, wq, log_wq_sz, rte_log2_u32(qsize));
 	MLX5_SET(wq, wq, pd, priv->pdn);
+	rq_buf = rte_malloc(__func__, wq_sz, 0);
+	if (!rq_buf) {
+		DRV_LOG(ERR, "Error allocating memory for RQ Buffer");
+		return -1;
+	}
+	dbrec = rte_malloc(__func__, MLX5_VDPA_DBR_RQ_SIZE, 0);
+	if (!dbrec) {
+		DRV_LOG(ERR, "Error allocating memory for RQ DB record");
+		rte_free(rq_buf);
+		return -1;
+	}
+	buf_umem = mlx5_glue->dv_devx_umem_reg(priv->ctx, rq_buf, wq_sz,
+					       IBV_ACCESS_LOCAL_WRITE);
+	if (!buf_umem) {
+		DRV_LOG(ERR, "Error registering UMEM for RQ Buffer");
+		goto err_buf;
+	}
+	dbr_umem = mlx5_glue->dv_devx_umem_reg(priv->ctx, dbrec,
+					       MLX5_VDPA_DBR_RQ_SIZE,
+					       IBV_ACCESS_LOCAL_WRITE);
+	if (!dbr_umem) {
+		DRV_LOG(ERR, "Error registering UMEM for RQ DB record");
+		mlx5_glue->dv_devx_umem_dereg(buf_umem);
+		goto err_buf;
+	}
+	DRV_LOG(INFO, "Success creating RQ UMEMs 0x%x 0x%x",
+		buf_umem->umem_id,
+		dbr_umem->umem_id);
+	MLX5_SET(wq, wq, dbr_umem_id, dbr_umem->umem_id);
+	MLX5_SET(wq, wq, wq_umem_id, buf_umem->umem_id);
 	rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 					       out, sizeof(out));
 	if (!rq_obj) {
-		DRV_LOG(DEBUG, "Failed to CREATE_RQ through Devx");
-		return -1;
+		DRV_LOG(DEBUG, "Failed to CREATE_RQ DEVX error %s",
+			strerror(errno));
+		goto err_umem;
 	}
 	priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
+	priv->virtq[idx].rq_buf = rq_buf;
+	priv->virtq[idx].dbr_buf = dbrec;
+	priv->virtq[idx].rq_buf_umem = buf_umem;
+	priv->virtq[idx].rq_dbr_umem = dbr_umem;
 	priv->virtq[idx].rq_obj = rq_obj;
 	DRV_LOG(DEBUG, "Success creating RQ 0x%x", priv->virtq[idx].rqn);
 	return 0;
+err_umem:
+	mlx5_glue->dv_devx_umem_dereg(buf_umem);
+	mlx5_glue->dv_devx_umem_dereg(dbr_umem);
+err_buf:
+	rte_free(rq_buf);
+	rte_free(dbrec);
+	return -1;
 }
 
 /*
@@ -291,16 +346,7 @@ static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
 {
 	if (create_tir(priv)) {
 		DRV_LOG(ERR, "Create TIR failed");
-		/* TODO(idos): Remove this when FW supports */
-		DRV_LOG(INFO, "Continuing without TIR");
-		/*
-		 * We can't create a flow with action
-		 * MLX5DV_FLOW_ACTION_DEST_DEVX if the TIR DEVX object is NULL
-		 * the mlx5dv_flow_create doesn't check the obj and we get
-		 * segmentation fault.
-		 * TODO(idos): Remove when the TIR is created successfully
-		 */
-		return 0;
+		return -1;
 	}
 	if (mlx5_vdpa_enable_promisc(priv)) {
 		DRV_LOG(ERR, "Promiscuous flow rule creation failed");
@@ -350,10 +396,7 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 				DRV_LOG(ERR,
 					"Create RQ failed for Virtqueue %d",
 					i);
-				/* TODO(idos): Remove this when FW supports */
-				DRV_LOG(INFO,
-					"Continuing without RQ of Virtqueue %d",
-					i);
+				return -1;
 			}
 		}
 	}
@@ -367,6 +410,7 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 
 static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 {
+	struct mlx5dv_devx_umem *umem;
 	struct mlx5dv_devx_obj *rq;
 	int i;
 
@@ -377,12 +421,24 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 	for (i = 0; i < priv->nr_vring; i++) {
 		if (is_virtq_recvq(i, priv->nr_vring)) {
 			rq = priv->virtq[i].rq_obj;
-			if (!rq)
-				continue;
-			if (mlx5_glue->dv_devx_obj_destroy(rq)) {
+			if (rq && mlx5_glue->dv_devx_obj_destroy(rq)) {
 				DRV_LOG(ERR, "Error DESTROY_RQ VirtQ %d", i);
 				return -1;
 			}
+			umem = priv->virtq[i].rq_dbr_umem;
+			if (umem && mlx5_glue->dv_devx_umem_dereg(umem)) {
+				DRV_LOG(ERR, "Error dereg Umem of DBR");
+				return -1;
+			}
+			priv->virtq[i].rq_dbr_umem = NULL;
+			umem = priv->virtq[i].rq_buf_umem;
+			if (umem && mlx5_glue->dv_devx_umem_dereg(umem)) {
+				DRV_LOG(ERR, "Error dereg Umem of WQ");
+				return -1;
+			}
+			priv->virtq[i].rq_buf_umem = NULL;
+			rte_free(priv->virtq[i].dbr_buf);
+			rte_free(priv->virtq[i].rq_buf);
 			priv->virtq[i].rq_obj = NULL;
 			priv->virtq[i].rqn = 0;
 		}
