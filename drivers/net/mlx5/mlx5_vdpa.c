@@ -1128,12 +1128,16 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 {
 	uint32_t in[MLX5_ST_SZ_DW(query_hca_cap_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(query_hca_cap_out)] = {0};
-	uint32_t in_special[MLX5_ST_SZ_DW(query_special_contexts_in)] = {0};
-	uint32_t out_special[MLX5_ST_SZ_DW(query_special_contexts_out)] = {0};
-	uint8_t dump_mkey_reported = 0;
 	void *virtio_net_cap = NULL;
 	void *cap = NULL;
+	struct mlx5dv_context dev_attr;
 
+	mlx5_glue->dv_query_device(priv->ctx, &dev_attr);
+	if (dev_attr.dump_fill_mkey == MLX5_INVALID_LKEY) {
+		DRV_LOG(DEBUG, "Failed to Query dump mkey from device");
+		return -1;
+	}
+	priv->caps.dump_mkey = dev_attr.dump_fill_mkey;
 	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
 	MLX5_SET(query_hca_cap_in, in, op_mod,
 			(MLX5_HCA_CAP_GENERAL << 1) |
@@ -1144,23 +1148,6 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 		return -1;
 	}
 	cap = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
-	dump_mkey_reported = MLX5_GET(cmd_hca_cap, cap, dump_fill_mkey);
-	if (!dump_mkey_reported) {
-		DRV_LOG(DEBUG, "dump_fill_mkey is not supported");
-		return -1;
-	}
-	/* Query the actual dump key. */
-	MLX5_SET(query_special_contexts_in, in_special, opcode,
-		 MLX5_CMD_OP_QUERY_SPECIAL_CONTEXTS);
-	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in_special,
-					   sizeof(in_special), out_special,
-					   sizeof(out_special))) {
-		DRV_LOG(DEBUG, "Failed to Query Special Contexts");
-		return -1;
-	}
-	priv->caps.dump_mkey = MLX5_GET(query_special_contexts_out,
-					out_special,
-					dump_fill_mkey);
 	/*
 	 * TODO (idos): Once we have FW support, exit if not supported
 	 */
