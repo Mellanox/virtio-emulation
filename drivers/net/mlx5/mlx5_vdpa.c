@@ -53,21 +53,26 @@ struct mlx5_vdpa_caps {
 };
 
 struct virtq_info {
-	uint32_t                rqn;
-	void                    *rq_buf;
+	uint32_t                qn;
+	void                    *q_buf;
 	void                    *dbr_buf;
-	struct mlx5dv_devx_obj  *rq_obj;
-	struct mlx5dv_devx_umem *rq_buf_umem;
+	struct mlx5dv_devx_obj  *q_obj;
+	struct mlx5dv_devx_umem *q_buf_umem;
 	struct mlx5dv_devx_umem *rq_dbr_umem;
 	uint32_t                virtq_id;
 	struct mlx5dv_devx_obj  *virtq_obj;
 };
 
-struct mlx5_vdpa_steer_info {
+struct mlx5_vdpa_rx_steer_info {
 	uint32_t               tirn;
 	struct mlx5dv_devx_obj *tir_obj;
 	struct ibv_flow        *promisc_flow;
 	struct mlx5dv_flow_matcher *matcher;
+};
+
+struct mlx5_vdpa_tx_steer_info {
+	uint32_t               tisn;
+	struct mlx5dv_devx_obj *tis_obj;
 };
 
 struct mlx5_vdpa_relay_thread {
@@ -121,7 +126,8 @@ struct vdpa_priv {
 	struct rte_vdpa_dev_addr      dev_addr;
 	struct mlx5_vdpa_caps         caps;
 	struct mlx5_vdpa_relay_thread relay;
-	struct mlx5_vdpa_steer_info   rx_steer_info;
+	struct mlx5_vdpa_rx_steer_info   rx_steer_info;
+	struct mlx5_vdpa_tx_steer_info   tx_steer_info;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
 	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr_list) mr_list;
 	/*
@@ -246,13 +252,13 @@ create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
 			strerror(errno));
 		goto err_umem;
 	}
-	priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
-	priv->virtq[idx].rq_buf = rq_buf;
+	priv->virtq[idx].qn = MLX5_GET(create_rq_out, out, rqn);
+	priv->virtq[idx].q_buf = rq_buf;
 	priv->virtq[idx].dbr_buf = dbrec;
-	priv->virtq[idx].rq_buf_umem = buf_umem;
+	priv->virtq[idx].q_buf_umem = buf_umem;
 	priv->virtq[idx].rq_dbr_umem = dbr_umem;
-	priv->virtq[idx].rq_obj = rq_obj;
-	DRV_LOG(DEBUG, "Success creating RQ 0x%x", priv->virtq[idx].rqn);
+	priv->virtq[idx].q_obj = rq_obj;
+	DRV_LOG(DEBUG, "Success creating RQ 0x%x", priv->virtq[idx].qn);
 	return 0;
 err_umem:
 	mlx5_glue->dv_devx_umem_dereg(buf_umem);
@@ -295,7 +301,7 @@ static int create_tir(struct vdpa_priv *priv)
 	 * This is because we are working with a single RX Virtqueue
 	 * TODO(idos): Change this to RSS and RQT once we support MQ.
 	 */
-	MLX5_SET(tirc, tirc, inline_rqn, priv->virtq[0].rqn);
+	MLX5_SET(tirc, tirc, inline_rqn, priv->virtq[0].qn);
 	MLX5_SET(tirc, tirc, rx_hash_fn, MLX5_RX_HASH_FN_NONE);
 	tir_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 						out, sizeof(out));
@@ -389,11 +395,11 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	if (is_virtq_recvq(index, priv->nr_vring)) {
 		MLX5_SET(virtq, virtq, queue_type,
 			 MLX5_VIRTQ_OBJ_QUEUE_TYPE_RX);
-		MLX5_SET(virtq, virtq, qnum, priv->virtq[index].rqn);
+		MLX5_SET(virtq, virtq, qnum, priv->virtq[index].qn);
 	} else {
 		MLX5_SET(virtq, virtq, queue_type,
 			  MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX);
-		/* TODO(liel): Please assign here the SQN to qnum */
+		MLX5_SET(virtq, virtq, qnum, priv->virtq[index].qn);
 	}
 	gpa = hva_to_gpa(priv->vid, (uint64_t)(uintptr_t)vq->desc);
 	if (!gpa) {
@@ -477,6 +483,47 @@ static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 	return 0;
 }
 
+static
+int mlx5_vdpa_create_tis(struct vdpa_priv *priv)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_tis_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_tis_out)] = {0};
+	struct mlx5_vdpa_tx_steer_info *tis = NULL;
+
+	tis = rte_zmalloc("tis", sizeof(*tis), RTE_CACHE_LINE_SIZE);
+	MLX5_SET(create_tis_in, in, opcode, MLX5_CMD_OP_CREATE_TIS);
+	tis->tis_obj =
+		mlx5_glue->dv_devx_obj_create(priv->ctx, in,
+					sizeof(in), out, sizeof(out));
+	if (!tis) {
+		DRV_LOG(ERR, "Can't create TIS using Devx error %s",
+			strerror(errno));
+		return -1;
+	}
+	tis->tisn = MLX5_GET(create_tis_out, out, tisn);
+	priv->tx_steer_info.tisn = MLX5_GET(create_tis_out, out, tisn);
+	priv->tx_steer_info.tis_obj = tis->tis_obj;
+	return 0;
+}
+
+static int mlx5_vdpa_setup_tx_steering(struct vdpa_priv *priv)
+{
+	return mlx5_vdpa_create_tis(priv);
+}
+
+static int mlx5_vdpa_release_tx_steer(struct vdpa_priv *priv)
+{
+	struct mlx5dv_devx_obj *tis;
+
+	tis = priv->tx_steer_info.tis_obj;
+	if (tis && mlx5_glue->dv_devx_obj_destroy(tis)) {
+		DRV_LOG(ERR, "Error Destroying TIS");
+		return -1;
+	}
+	priv->tx_steer_info.tis_obj = NULL;
+	priv->tx_steer_info.tisn = 0;
+	return 0;
+}
 
 static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 {
@@ -489,6 +536,10 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	priv->nr_vring = nr_vring;
 	if (create_cq(priv)) {
 		DRV_LOG(ERR, "Create CQ failed");
+		return -1;
+	}
+	if (mlx5_vdpa_setup_tx_steering(priv)) {
+		DRV_LOG(ERR, "Create Steering for TX");
 		return -1;
 	}
 	for (i = 0; i < nr_vring; i++) {
@@ -525,6 +576,10 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 		DRV_LOG(ERR, "Error Releasing RX steering resources");
 		return -1;
 	}
+	if (mlx5_vdpa_release_tx_steer(priv)) {
+		DRV_LOG(ERR, "Error Releasing TX steering resources");
+		return -1;
+	}
 	for (i = 0; i < priv->nr_vring; i++) {
 		virtq = priv->virtq[i].virtq_obj;
 		if (virtq)
@@ -532,7 +587,7 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 		priv->virtq[i].virtq_obj = NULL;
 		priv->virtq[i].virtq_id = 0;
 		if (is_virtq_recvq(i, priv->nr_vring)) {
-			rq = priv->virtq[i].rq_obj;
+			rq = priv->virtq[i].q_obj;
 			if (rq && mlx5_glue->dv_devx_obj_destroy(rq)) {
 				DRV_LOG(ERR, "Error DESTROY_RQ VirtQ %d", i);
 				return -1;
@@ -543,16 +598,16 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 				return -1;
 			}
 			priv->virtq[i].rq_dbr_umem = NULL;
-			umem = priv->virtq[i].rq_buf_umem;
+			umem = priv->virtq[i].q_buf_umem;
 			if (umem && mlx5_glue->dv_devx_umem_dereg(umem)) {
 				DRV_LOG(ERR, "Error dereg Umem of WQ");
 				return -1;
 			}
-			priv->virtq[i].rq_buf_umem = NULL;
+			priv->virtq[i].q_buf_umem = NULL;
 			rte_free(priv->virtq[i].dbr_buf);
-			rte_free(priv->virtq[i].rq_buf);
-			priv->virtq[i].rq_obj = NULL;
-			priv->virtq[i].rqn = 0;
+			rte_free(priv->virtq[i].q_buf);
+			priv->virtq[i].q_obj = NULL;
+			priv->virtq[i].qn = 0;
 		}
 	}
 	if (mlx5_glue->destroy_cq(priv->cq)) {
