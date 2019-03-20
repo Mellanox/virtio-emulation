@@ -53,6 +53,8 @@ struct mlx5_vdpa_caps {
 struct virtq_info {
 	uint32_t virtq_id;
 	struct mlx5dv_devx_obj *virtq_obj;
+	struct mlx5dv_devx_umem *umem_obj;
+	void *umem_buf;
 };
 
 struct mlx5_vdpa_steer_info {
@@ -249,6 +251,28 @@ exit:
 }
 
 static int
+mlx5_vdpa_query_virtq_umem(struct vdpa_priv *priv,
+			   struct rte_vhost_vring *vq)
+{
+	uint32_t in[MLX5_ST_SZ_DW(query_virtio_net_emulation_info_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(query_virtio_net_emulation_info_out)] = {0};
+	int umem_size;
+
+	MLX5_SET(query_virtio_net_emulation_info_in, in, opcode,
+		 MLX5_CMD_OP_QUERY_VIRTIO_NET_EMULATION_INFO);
+	MLX5_SET(query_virtio_net_emulation_info_in, in, virtio_net_q_size,
+		 vq->size);
+	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
+					   out, sizeof(out))) {
+		DRV_LOG(DEBUG, "Failed to Query Virtio Net emulation info");
+		return -1;
+	}
+	umem_size = MLX5_GET(query_virtio_net_emulation_info_out, out,
+			     umem_size);
+	return umem_size;
+}
+
+static int
 create_split_virtq(struct vdpa_priv *priv, int index,
 		   struct rte_vhost_vring *vq)
 {
@@ -257,8 +281,27 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	struct mlx5dv_devx_obj *virtq_obj = NULL;
 	void *virtq = NULL;
 	void *hdr = NULL;
+	struct virtq_info *info = &priv->virtq[index];
 	uint64_t gpa;
+	int umem_size;
 
+	/* Setup UMEM for this virt queue. */
+	umem_size = mlx5_vdpa_query_virtq_umem(priv, vq);
+	if (umem_size <= 0)
+		goto error;
+	info->umem_buf = rte_malloc(__func__, umem_size, 0);
+	if (!info->umem_buf) {
+		DRV_LOG(ERR, "Error allocating memory for Virt queue");
+		goto error;
+	}
+	info->umem_obj = mlx5_glue->dv_devx_umem_reg(priv->ctx, info->umem_buf,
+						     umem_size,
+						     IBV_ACCESS_LOCAL_WRITE);
+	if (!info->umem_obj) {
+		DRV_LOG(ERR, "Error registering UMEM for Virt queue");
+		goto error;
+	}
+	/* Fill command mailbox. */
 	hdr = MLX5_ADDR_OF(create_virtq_in, in, hdr);
 	MLX5_SET(general_obj_in_cmd_hdr, hdr, opcode,
 		 MLX5_CMD_OP_CREATE_GENERAL_OBJECT);
@@ -298,6 +341,7 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	 * ctrl_mkey field to it.
 	 */
 	MLX5_SET(virtq, virtq, ctrl_mkey, priv->gpa_mkey_index);
+	MLX5_SET(virtq, virtq, umem_id, info->umem_obj->umem_id);
 	virtq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 						  out, sizeof(out));
 	if (!virtq_obj) {
@@ -310,6 +354,12 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	DRV_LOG(DEBUG, "Success creating VIRTQ 0x%x",
 		priv->virtq[index].virtq_id);
 	return 0;
+error:
+	if (info->umem_obj)
+		mlx5_glue->dv_devx_umem_dereg(info->umem_obj);
+	if (info->umem_buf)
+		rte_free(info->umem_buf);
+	return -1;
 }
 
 static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
@@ -353,7 +403,6 @@ static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 	return 0;
 }
 
-
 static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 {
 	int i, nr_vring;
@@ -379,22 +428,38 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	return 0;
 }
 
+static int
+destroy_split_virtq(struct vdpa_priv *priv, int index)
+{
+	struct virtq_info *info = &priv->virtq[index];
+
+	if (info->virtq_obj) {
+		mlx5_glue->dv_devx_obj_destroy(info->virtq_obj);
+		info->virtq_obj = NULL;
+		info->virtq_id = 0;
+	}
+	if (info->umem_obj) {
+		mlx5_glue->dv_devx_umem_dereg(info->umem_obj);
+		info->umem_obj = NULL;
+	}
+	if (info->umem_buf) {
+		rte_free(info->umem_buf);
+		info->umem_buf = NULL;
+	}
+	return 0;
+}
+
+
 static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 {
-	struct mlx5dv_devx_obj *virtq;
 	int i;
 
 	if (mlx5_vdpa_release_rx_steer(priv)) {
 		DRV_LOG(ERR, "Error Releasing RX steering resources");
 		return -1;
 	}
-	for (i = 0; i < priv->nr_vring; i++) {
-		virtq = priv->virtq[i].virtq_obj;
-		if (virtq)
-			mlx5_glue->dv_devx_obj_destroy(virtq);
-		priv->virtq[i].virtq_obj = NULL;
-		priv->virtq[i].virtq_id = 0;
-	}
+	for (i = 0; i < priv->nr_vring; i++)
+		destroy_split_virtq(priv, i);
 	return 0;
 }
 

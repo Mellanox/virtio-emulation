@@ -986,6 +986,7 @@ enum {
 	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT  = 0xa01,
 	MLX5_CMD_OP_QUERY_GENERAL_OBJECT   = 0xa02,
 	MLX5_CMD_OP_DESTROY_GENERAL_OBJECT = 0xa03,
+	MLX5_CMD_OP_QUERY_VIRTIO_NET_EMULATION_INFO = 0xb04,
 };
 
 enum {
@@ -1178,6 +1179,25 @@ struct mlx5_ifc_create_mkey_in_bits {
 	u8         mkey_umem_offset[0x40];
 	u8         reserved_at_380[0x500];
 	struct mlx5_ifc_klm_bits klm_pas_mtt[0];
+};
+
+struct mlx5_ifc_query_virtio_net_emulation_info_in_bits {
+	u8         opcode[0x10];
+	u8         reserved_at_10[0x10];
+	u8         reserved_at_20[0x10];
+	u8         op_mod[0x10];
+	u8         reserved_at_40[0x20];
+	u8         reserved_at_60[0x10];
+	u8         virtio_net_q_size[0x10];
+};
+
+struct mlx5_ifc_query_virtio_net_emulation_info_out_bits {
+	u8         status[0x8];
+	u8         reserved_at_8[0x18];
+	u8         syndrome[0x20];
+	u8         reserved_at_40[0x40];
+	u8         umem_size[0x20];
+	u8         reserved_at_100[0x160];
 };
 
 #endif /* RTE_PMD_MLX5_PRM_H_ */
