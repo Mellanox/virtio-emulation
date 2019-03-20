@@ -31,8 +31,6 @@
 
 /** Driver Static values in the absence of device VIRTIO emulation support */
 #define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
-#define MLX5_VDPA_LOG_RQ_STRIDE           5
-#define MLX5_VDPA_DBR_RQ_SIZE             8
 
 #define MLX5_VDPA_FEATURES ((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
 			    (1ULL << VIRTIO_F_VERSION_1))
@@ -53,14 +51,8 @@ struct mlx5_vdpa_caps {
 };
 
 struct virtq_info {
-	uint32_t                rqn;
-	void                    *rq_buf;
-	void                    *dbr_buf;
-	struct mlx5dv_devx_obj  *rq_obj;
-	struct mlx5dv_devx_umem *rq_buf_umem;
-	struct mlx5dv_devx_umem *rq_dbr_umem;
-	uint32_t                virtq_id;
-	struct mlx5dv_devx_obj  *virtq_obj;
+	uint32_t virtq_id;
+	struct mlx5dv_devx_obj *virtq_obj;
 };
 
 struct mlx5_vdpa_steer_info {
@@ -124,14 +116,6 @@ struct vdpa_priv {
 	struct mlx5_vdpa_steer_info   rx_steer_info;
 	struct virtq_info virtq[MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED * 2];
 	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr_list) mr_list;
-	/*
-	 *  Following objects may be temporary (depending on FW decision)
-	 *  They are here mostly for verifying the steering works.
-	 *  Please put non-temporary fields above.
-	 *  TODO(idos): Remove when decision on FW development is taken
-	 */
-	uint32_t                      cqn;
-	struct ibv_cq		      *cq;
 };
 
 struct vdpa_priv_list {
@@ -163,106 +147,6 @@ static int create_pd(struct vdpa_priv *priv)
 	return 0;
 }
 
-static int create_cq(struct vdpa_priv *priv)
-{
-	struct mlx5dv_obj dv_obj;
-	struct mlx5dv_cq dv_cq;
-	struct ibv_cq *cq;
-
-	cq = mlx5_glue->create_cq(priv->ctx, 1, NULL, NULL, 0);
-	if (!cq) {
-		DRV_LOG(ERR, "ibv_cq creation failed");
-		return -1;
-	}
-	dv_obj.cq.in = cq;
-	dv_obj.cq.out = &dv_cq;
-	if (mlx5_glue->dv_init_obj(&dv_obj, MLX5DV_OBJ_CQ)) {
-		DRV_LOG(ERR, "DV init_obj for CQ failed");
-		return -1;
-	}
-	priv->cqn = dv_cq.cqn;
-	priv->cq = cq;
-	DRV_LOG(DEBUG, "Success creating CQ 0x%x", priv->cqn);
-	return 0;
-}
-
-static int
-create_rq(struct vdpa_priv *priv, uint16_t qsize, uint16_t idx)
-{
-	uint32_t in[MLX5_ST_SZ_DW(create_rq_in)] = {0};
-	uint32_t out[MLX5_ST_SZ_DW(create_rq_out)] = {0};
-	struct mlx5dv_devx_umem *buf_umem = NULL;
-	struct mlx5dv_devx_umem *dbr_umem = NULL;
-	struct mlx5dv_devx_obj *rq_obj = NULL;
-	void *rq_buf = NULL;
-	void *dbrec = NULL;
-	void *rqc = NULL;
-	void *wq = NULL;
-	int wq_sz;
-
-	MLX5_SET(create_rq_in, in, opcode, MLX5_CMD_OP_CREATE_RQ);
-	rqc = MLX5_ADDR_OF(create_rq_in, in, ctx);
-	MLX5_SET(rqc, rqc, cqn, priv->cqn);
-	wq = MLX5_ADDR_OF(rqc, rqc, wq);
-	/* TODO(idos): Check log_wq_size according to device CAP */
-	wq_sz = qsize * (1 << MLX5_VDPA_LOG_RQ_STRIDE);
-	MLX5_SET(wq, wq, log_wq_stride, MLX5_VDPA_LOG_RQ_STRIDE);
-	MLX5_SET(wq, wq, log_wq_sz, rte_log2_u32(qsize));
-	MLX5_SET(wq, wq, pd, priv->pdn);
-	rq_buf = rte_malloc(__func__, wq_sz, 0);
-	if (!rq_buf) {
-		DRV_LOG(ERR, "Error allocating memory for RQ Buffer");
-		return -1;
-	}
-	dbrec = rte_malloc(__func__, MLX5_VDPA_DBR_RQ_SIZE, 0);
-	if (!dbrec) {
-		DRV_LOG(ERR, "Error allocating memory for RQ DB record");
-		rte_free(rq_buf);
-		return -1;
-	}
-	buf_umem = mlx5_glue->dv_devx_umem_reg(priv->ctx, rq_buf, wq_sz,
-					       IBV_ACCESS_LOCAL_WRITE);
-	if (!buf_umem) {
-		DRV_LOG(ERR, "Error registering UMEM for RQ Buffer");
-		goto err_buf;
-	}
-	dbr_umem = mlx5_glue->dv_devx_umem_reg(priv->ctx, dbrec,
-					       MLX5_VDPA_DBR_RQ_SIZE,
-					       IBV_ACCESS_LOCAL_WRITE);
-	if (!dbr_umem) {
-		DRV_LOG(ERR, "Error registering UMEM for RQ DB record");
-		mlx5_glue->dv_devx_umem_dereg(buf_umem);
-		goto err_buf;
-	}
-	DRV_LOG(INFO, "Success creating RQ UMEMs 0x%x 0x%x",
-		buf_umem->umem_id,
-		dbr_umem->umem_id);
-	MLX5_SET(wq, wq, dbr_umem_id, dbr_umem->umem_id);
-	MLX5_SET(wq, wq, wq_umem_id, buf_umem->umem_id);
-	rq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
-					       out, sizeof(out));
-	if (!rq_obj) {
-		DRV_LOG(DEBUG, "Failed to CREATE_RQ DEVX error %s",
-			strerror(errno));
-		goto err_umem;
-	}
-	priv->virtq[idx].rqn = MLX5_GET(create_rq_out, out, rqn);
-	priv->virtq[idx].rq_buf = rq_buf;
-	priv->virtq[idx].dbr_buf = dbrec;
-	priv->virtq[idx].rq_buf_umem = buf_umem;
-	priv->virtq[idx].rq_dbr_umem = dbr_umem;
-	priv->virtq[idx].rq_obj = rq_obj;
-	DRV_LOG(DEBUG, "Success creating RQ 0x%x", priv->virtq[idx].rqn);
-	return 0;
-err_umem:
-	mlx5_glue->dv_devx_umem_dereg(buf_umem);
-	mlx5_glue->dv_devx_umem_dereg(dbr_umem);
-err_buf:
-	rte_free(rq_buf);
-	rte_free(dbrec);
-	return -1;
-}
-
 /*
  * According to VIRTIO_NET Spec the virtqueues index identity its type by:
  * 0 receiveq1
@@ -289,18 +173,12 @@ static int create_tir(struct vdpa_priv *priv)
 	MLX5_SET(create_tir_in, in, opcode, MLX5_CMD_OP_CREATE_TIR);
 	tirc = MLX5_ADDR_OF(create_tir_in, in, ctx);
 	MLX5_SET(tirc, tirc, disp_type, MLX5_TIRC_DISP_TYPE_DIRECT);
-	/*
-	 * For Now we are creating a simple direct TIR that points to
-	 * the RQ for Virtqueue index 0 only.
-	 * This is because we are working with a single RX Virtqueue
-	 * TODO(idos): Change this to RSS and RQT once we support MQ.
-	 */
-	MLX5_SET(tirc, tirc, inline_rqn, priv->virtq[0].rqn);
+	MLX5_SET(tirc, tirc, inline_rqn, priv->virtq[0].virtq_id);
 	MLX5_SET(tirc, tirc, rx_hash_fn, MLX5_RX_HASH_FN_NONE);
 	tir_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 						out, sizeof(out));
 	if (!tir_obj) {
-		DRV_LOG(DEBUG, "Failed to CREATE_TIR through Devx");
+		DRV_LOG(DEBUG, "Failed to create TIR");
 		return -1;
 	}
 	priv->rx_steer_info.tirn = MLX5_GET(create_tir_out, out, tirn);
@@ -389,7 +267,6 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	if (is_virtq_recvq(index, priv->nr_vring)) {
 		MLX5_SET(virtq, virtq, queue_type,
 			 MLX5_VIRTQ_OBJ_QUEUE_TYPE_RX);
-		MLX5_SET(virtq, virtq, qnum, priv->virtq[index].rqn);
 	} else {
 		MLX5_SET(virtq, virtq, queue_type,
 			  MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX);
@@ -487,20 +364,8 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	/* TODO(idos): Remove when have MQ support */
 	assert(nr_vring == 2);
 	priv->nr_vring = nr_vring;
-	if (create_cq(priv)) {
-		DRV_LOG(ERR, "Create CQ failed");
-		return -1;
-	}
 	for (i = 0; i < nr_vring; i++) {
 		rte_vhost_get_vhost_vring(priv->vid, i, &vq);
-		if (is_virtq_recvq(i, nr_vring)) {
-			if (create_rq(priv, vq.size, i)) {
-				DRV_LOG(ERR,
-					"Create RQ failed for Virtqueue %d",
-					i);
-				return -1;
-			}
-		}
 		if (create_split_virtq(priv, i, &vq)) {
 			DRV_LOG(ERR, "Create VIRTQ general obj failed");
 			/* TODO(idos): Remove and fail when FW supports */
@@ -509,16 +374,15 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	}
 	if (mlx5_vdpa_setup_rx_steering(priv)) {
 		DRV_LOG(ERR, "Create Steering for RX failed");
-		return -1;
+		/* TODO: Remove and fail when FW supports */
+		DRV_LOG(INFO, "Still no FW support, continuing..");
 	}
 	return 0;
 }
 
 static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 {
-	struct mlx5dv_devx_umem *umem;
 	struct mlx5dv_devx_obj *virtq;
-	struct mlx5dv_devx_obj *rq;
 	int i;
 
 	if (mlx5_vdpa_release_rx_steer(priv)) {
@@ -531,36 +395,7 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 			mlx5_glue->dv_devx_obj_destroy(virtq);
 		priv->virtq[i].virtq_obj = NULL;
 		priv->virtq[i].virtq_id = 0;
-		if (is_virtq_recvq(i, priv->nr_vring)) {
-			rq = priv->virtq[i].rq_obj;
-			if (rq && mlx5_glue->dv_devx_obj_destroy(rq)) {
-				DRV_LOG(ERR, "Error DESTROY_RQ VirtQ %d", i);
-				return -1;
-			}
-			umem = priv->virtq[i].rq_dbr_umem;
-			if (umem && mlx5_glue->dv_devx_umem_dereg(umem)) {
-				DRV_LOG(ERR, "Error dereg Umem of DBR");
-				return -1;
-			}
-			priv->virtq[i].rq_dbr_umem = NULL;
-			umem = priv->virtq[i].rq_buf_umem;
-			if (umem && mlx5_glue->dv_devx_umem_dereg(umem)) {
-				DRV_LOG(ERR, "Error dereg Umem of WQ");
-				return -1;
-			}
-			priv->virtq[i].rq_buf_umem = NULL;
-			rte_free(priv->virtq[i].dbr_buf);
-			rte_free(priv->virtq[i].rq_buf);
-			priv->virtq[i].rq_obj = NULL;
-			priv->virtq[i].rqn = 0;
-		}
 	}
-	if (mlx5_glue->destroy_cq(priv->cq)) {
-		DRV_LOG(ERR, "Error destroying CQ");
-		return -1;
-	}
-	priv->cqn = 0;
-	priv->cq = NULL;
 	return 0;
 }
 
