@@ -375,6 +375,8 @@ typedef uint8_t u8;
 #define __mlx5_16_bit_off(typ, fld) (16 - __mlx5_bit_sz(typ, fld) - \
 				    (__mlx5_bit_off(typ, fld) & 0xf))
 #define __mlx5_mask16(typ, fld) ((u16)((1ull << __mlx5_bit_sz(typ, fld)) - 1))
+#define __mlx5_16_mask(typ, fld) (__mlx5_mask16(typ, fld) << \
+				  __mlx5_16_bit_off(typ, fld))
 #define MLX5_ST_SZ_DW(typ) (sizeof(struct mlx5_ifc_##typ##_bits) / 32)
 #define MLX5_ST_SZ_DB(typ) (sizeof(struct mlx5_ifc_##typ##_bits) / 8)
 #define MLX5_BYTE_OFF(typ, fld) (__mlx5_bit_off(typ, fld) / 8)
@@ -390,6 +392,16 @@ typedef uint8_t u8;
 				  (~__mlx5_dw_mask(typ, fld))) | \
 				 (((_v) & __mlx5_mask(typ, fld)) << \
 				   __mlx5_dw_bit_off(typ, fld))); \
+	} while (0)
+#define MLX5_SET16(typ, p, fld, v) \
+	do { \
+		u16 _v = v; \
+		*((__be16 *)(p) + __mlx5_16_off(typ, fld)) = \
+		rte_cpu_to_be_16((rte_be_to_cpu_16(*((__be16 *)(p) + \
+				  __mlx5_16_off(typ, fld))) & \
+				  (~__mlx5_16_mask(typ, fld))) | \
+				 (((_v) & __mlx5_mask16(typ, fld)) << \
+				  __mlx5_16_bit_off(typ, fld))); \
 	} while (0)
 #define __MLX5_SET64(typ, p, fld, v) do { \
 	assert(__mlx5_bit_sz(typ, fld) == 64); \
@@ -827,29 +839,21 @@ struct mlx5_ifc_cmd_hca_cap_bits {
 };
 
 struct mlx5_ifc_virtio_net_cap_bits {
-	u8 max_num_of_virtqs[0x10];
-	u8 doorbell_bar_offset[0x10];
-	u8 log_doorbell_bar_size[0x8];
-	u8 reserved_at_28[0x18];
-	u8 log_doorbell_stride[0x8];
-	u8 reserved_at_48[0xb8];
-};
-
-struct mlx5_ifc_device_emulation_bits {
-	u8 nvme_offload_type_sqe[0x1];
-	u8 nvme_offload_type_doorbell_only[0x1];
-	u8 nvme_offload_type_command_capsule[0x1];
-	u8 log_max_nvme_offload_namespaces[0x5];
-	u8 reserved_at_8[0x28];
-	u8 registers_size[0x10];
-	u8 reserved_at_40[0xc0];
-	struct mlx5_ifc_virtio_net_cap_bits virtnet;
-	u8 reserved_at_200[0x600];
+	u8 reserved_at_0[0x18];
+	u8 virtio_queue_type[0x8];
+	u8 reserved_at_20[0x13];
+	u8 log_doorbell_stride[0x5];
+	u8 reserved_at_38[0x3];
+	u8 log_doorbell_bar_size[0x5];
+	u8 doorbell_bar_offset[0x40];
+	u8 reserved_at_80[0x8];
+	u8 max_num_virtio_queues[0x18];
+	u8 reserved_at_a0[0x760];
 };
 
 union mlx5_ifc_hca_cap_union_bits {
 	struct mlx5_ifc_cmd_hca_cap_bits cmd_hca_cap;
-	struct mlx5_ifc_device_emulation_bits emulation_cap;
+	struct mlx5_ifc_virtio_net_cap_bits virtio_net_cap;
 	u8 reserved_at_0[0x8000];
 };
 
@@ -949,17 +953,23 @@ struct mlx5_ifc_general_obj_out_cmd_hdr_bits {
 };
 
 struct mlx5_ifc_virtq_bits {
-	u8 reserved_at_0[0x84];
-	u8 queue_type[0x4];
-	u8 qnum[0x18];
+	u8 modify_field_select[0x40];
+	u8 reserved_at_40[0x40];
+	u8 virtio_q_type[0x8];
+	u8 tisn[0x18];
+	u8 virtio_q_state[0x4];
+	u8 virtio_direction[0x4];
+	u8 reserved_at_a8[0x18];
 	u8 desc_addr[0x40];
 	u8 used_addr[0x40];
 	u8 available_addr[0x40];
-	u8 doorbell_stride_idx[0x10];
-	u8 queue_size[0x10];
 	u8 ctrl_mkey[0x20];
 	u8 data_mkey[0x20];
-	u8 reserved_at_1c0[0x640];
+	u8 umem_offset[0x40];
+	u8 umem_id[0x20];
+	u8 doorbell_stride_idx[0x10];
+	u8 queue_size[0x10];
+	u8 reserved_at_240[0x5c0];
 };
 
 struct mlx5_ifc_create_virtq_in_bits {
@@ -980,7 +990,7 @@ enum {
 
 enum {
 	MLX5_HCA_CAP_GENERAL = 0,
-	MLX5_HCA_CAP_DEVICE_EMULATION = 0x10,
+	MLX5_HCA_CAP_DEVICE_EMULATION = 0x13,
 };
 
 enum {
