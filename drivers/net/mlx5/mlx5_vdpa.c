@@ -57,9 +57,13 @@ struct virtq_info {
 	void *umem_buf;
 };
 
+struct mlx5_vdpa_devx_obj {
+	struct mlx5dv_devx_obj *obj;
+	uint32_t id;
+};
+
 struct mlx5_vdpa_steer_info {
-	uint32_t               tirn;
-	struct mlx5dv_devx_obj *tir_obj;
+	struct mlx5_vdpa_devx_obj tir;
 	struct ibv_flow        *promisc_flow;
 	struct mlx5dv_flow_matcher *matcher;
 };
@@ -68,11 +72,6 @@ struct mlx5_vdpa_relay_thread {
 	int       epfd; /* Epoll fd for relay thread. */
 	pthread_t tid; /* Notify thread id. */
 	void      *notify_base; /* Notify base address. */
-};
-
-struct mlx5_devx_mkey {
-	void		*obj;
-	uint32_t	key;
 };
 
 struct mlx5_devx_mkey_attr {
@@ -94,7 +93,7 @@ struct mlx5_vdpa_query_mr {
 	void			*addr;
 	uint64_t		length;
 	struct mlx5dv_devx_umem *umem;
-	struct mlx5_devx_mkey   *mkey;
+	struct mlx5_vdpa_devx_obj *mkey;
 	int			is_indirect;
 };
 
@@ -106,10 +105,10 @@ struct mlx5_vdpa_query_mr_list {
 struct vdpa_priv {
 	int                           id; /* vDPA device id. */
 	int                           vid; /* virtio_net driver id */
-	uint32_t                      pdn; /* PD number */
+	struct mlx5_vdpa_devx_obj     pd;
+	struct mlx5_vdpa_devx_obj     tis;
 	uint32_t                      gpa_mkey_index;
 	uint16_t                      nr_vring;
-	struct mlx5dv_devx_obj        *pd_obj; /* PD object handler */
 	rte_atomic32_t                dev_attached;
 	struct ibv_context            *ctx; /* Device context. */
 	struct rte_vdpa_dev_addr      dev_addr;
@@ -134,18 +133,16 @@ static int create_pd(struct vdpa_priv *priv)
 {
 	uint32_t in[MLX5_ST_SZ_DW(alloc_pd_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(alloc_pd_out)] = {0};
-	struct mlx5dv_devx_obj *pd;
 
 	MLX5_SET(alloc_pd_in, in, opcode, MLX5_CMD_OP_ALLOC_PD);
-	pd = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+	priv->pd.obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 					   out, sizeof(out));
-	if (!pd) {
+	if (!priv->pd.obj) {
 		DRV_LOG(ERR, "PD allocation failure");
 		return -1;
 	}
-	priv->pdn = MLX5_GET(alloc_pd_out, out, pd);
-	priv->pd_obj = pd;
-	DRV_LOG(DEBUG, "Success creating PD 0x%x", priv->pdn);
+	priv->pd.id = MLX5_GET(alloc_pd_out, out, pd);
+	DRV_LOG(DEBUG, "Success creating PD 0x%x", priv->pd.id);
 	return 0;
 }
 
@@ -183,9 +180,9 @@ static int create_tir(struct vdpa_priv *priv)
 		DRV_LOG(DEBUG, "Failed to create TIR");
 		return -1;
 	}
-	priv->rx_steer_info.tirn = MLX5_GET(create_tir_out, out, tirn);
-	priv->rx_steer_info.tir_obj = tir_obj;
-	DRV_LOG(DEBUG, "Success creating TIR 0x%x", priv->rx_steer_info.tirn);
+	priv->rx_steer_info.tir.id = MLX5_GET(create_tir_out, out, tirn);
+	priv->rx_steer_info.tir.obj = tir_obj;
+	DRV_LOG(DEBUG, "Success creating TIR 0x%x", priv->rx_steer_info.tir.id);
 	return 0;
 }
 
@@ -202,7 +199,7 @@ static int mlx5_vdpa_enable_promisc(struct vdpa_priv *priv)
 	};
 	struct mlx5dv_flow_action_attr action_attr = {
 		.type = MLX5DV_FLOW_ACTION_DEST_DEVX,
-		.obj = priv->rx_steer_info.tir_obj,
+		.obj = priv->rx_steer_info.tir.obj,
 	};
 	matcher = mlx5_glue->dv_create_flow_matcher(priv->ctx, &dv_attr);
 	if (!matcher) {
@@ -342,6 +339,7 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	 */
 	MLX5_SET(virtq, virtq, ctrl_mkey, priv->gpa_mkey_index);
 	MLX5_SET(virtq, virtq, umem_id, info->umem_obj->umem_id);
+	MLX5_SET(virtq, virtq, tisn, priv->tis.id);
 	virtq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 						  out, sizeof(out));
 	if (!virtq_obj) {
@@ -393,13 +391,13 @@ static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 		return -1;
 	}
 	priv->rx_steer_info.matcher = NULL;
-	tir = priv->rx_steer_info.tir_obj;
+	tir = priv->rx_steer_info.tir.obj;
 	if (tir && mlx5_glue->dv_devx_obj_destroy(tir)) {
 		DRV_LOG(ERR, "Error Destroying TIR");
 		return -1;
 	}
-	priv->rx_steer_info.tir_obj = NULL;
-	priv->rx_steer_info.tirn = 0;
+	priv->rx_steer_info.tir.obj = NULL;
+	priv->rx_steer_info.tir.id = 0;
 	return 0;
 }
 
@@ -463,15 +461,15 @@ static int mlx5_vdpa_release_virtqs(struct vdpa_priv *priv)
 	return 0;
 }
 
-static
-struct mlx5_devx_mkey *mlx5_vdpa_create_mkey(struct ibv_context *ctx,
-					struct mlx5_devx_mkey_attr *mkey_attr)
+static struct mlx5_vdpa_devx_obj *
+mlx5_vdpa_create_mkey(struct ibv_context *ctx,
+		      struct mlx5_devx_mkey_attr *mkey_attr)
 {
 	uint32_t in[MLX5_ST_SZ_DW(create_mkey_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(create_mkey_out)] = {0};
 	uint32_t status;
 	void *mkc;
-	struct mlx5_devx_mkey *mkey = NULL;
+	struct mlx5_vdpa_devx_obj *mkey = NULL;
 	int translations_oct_size = ((((mkey_attr->size + 4095) / 4096) + 1) / 2);
 
 	mkey = rte_zmalloc("mkey", sizeof(*mkey), RTE_CACHE_LINE_SIZE);
@@ -502,10 +500,10 @@ struct mlx5_devx_mkey *mlx5_vdpa_create_mkey(struct ibv_context *ctx,
 		goto error;
 	}
 	status = MLX5_GET(create_mkey_out, out, status);
-	mkey->key = MLX5_GET(create_mkey_out, out, mkey_index);
-	mkey->key = (mkey->key << 8) | MKEY_VARIANT_PART;
+	mkey->id = MLX5_GET(create_mkey_out, out, mkey_index);
+	mkey->id = (mkey->id << 8) | MKEY_VARIANT_PART;
 	DRV_LOG(DEBUG, "create mkey status %d mkey value %d",
-		status, (mkey->key));
+		status, (mkey->id));
 	if (status)
 		goto error;
 	return mkey;
@@ -515,10 +513,10 @@ error:
 	return NULL;
 }
 
-static
-struct mlx5_devx_mkey *mlx5_create_indirect_mkey(struct ibv_context *ctx,
-					struct mlx5_devx_mkey_attr *mkey_attr,
-					struct mlx5_klm *klm_array, int num_klm)
+static struct mlx5_vdpa_devx_obj *
+mlx5_create_indirect_mkey(struct ibv_context *ctx,
+			  struct mlx5_devx_mkey_attr *mkey_attr,
+			  struct mlx5_klm *klm_array, int num_klm)
 {
 	int translations_oct_size = (((num_klm / 4) + (num_klm % 4)) * 4);
 	uint32_t in_size = MLX5_ST_SZ_DB(create_mkey_in) +
@@ -527,7 +525,7 @@ struct mlx5_devx_mkey *mlx5_create_indirect_mkey(struct ibv_context *ctx,
 	uint32_t out[MLX5_ST_SZ_DW(create_mkey_out)] = {0};
 	uint32_t status;
 	void *mkc;
-	struct mlx5_devx_mkey *mkey = NULL;
+	struct mlx5_vdpa_devx_obj *mkey = NULL;
 	uint8_t *klm = (uint8_t *)MLX5_ADDR_OF(create_mkey_in, in, klm_pas_mtt);
 
 	mkey = rte_zmalloc("mkey", sizeof(*mkey), RTE_CACHE_LINE_SIZE);
@@ -566,8 +564,8 @@ struct mlx5_devx_mkey *mlx5_create_indirect_mkey(struct ibv_context *ctx,
 		goto error;
 	}
 	status = MLX5_GET(create_mkey_out, out, status);
-	mkey->key = MLX5_GET(create_mkey_out, out, mkey_index);
-	mkey->key = (mkey->key << 8) | MKEY_VARIANT_PART;
+	mkey->id = MLX5_GET(create_mkey_out, out, mkey_index);
+	mkey->id = (mkey->id << 8) | MKEY_VARIANT_PART;
 	if (status)
 		return NULL;
 
@@ -830,7 +828,7 @@ mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 		mkey_attr.addr = (uintptr_t)(reg->guest_phys_addr);
 		mkey_attr.size = reg->size;
 		mkey_attr.pas_id = entry->umem->umem_id;
-		mkey_attr.pd = priv->pdn;
+		mkey_attr.pd = priv->pd.id;
 		entry->mkey = mlx5_vdpa_create_mkey(priv->ctx, &mkey_attr);
 		if (!entry->mkey) {
 			DRV_LOG(ERR, "Unable to create Mkey");
@@ -868,7 +866,7 @@ mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 	}
 	mkey_attr.addr = (uintptr_t)(mem->regions[0].guest_phys_addr);
 	mkey_attr.size = mem_size;
-	mkey_attr.pd = priv->pdn;
+	mkey_attr.pd = priv->pd.id;
 	mkey_attr.pas_id = 0;
 	mkey_attr.log_entity_size = rte_log2_u32(klm_size);
 	list_elem =
@@ -887,7 +885,7 @@ mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 	entry->is_indirect = 1;
 	list_elem->vdpa_query_mr = entry;
 	SLIST_INSERT_HEAD(&priv->mr_list, list_elem, next);
-	priv->gpa_mkey_index = entry->mkey->key;
+	priv->gpa_mkey_index = entry->mkey->id;
 	return 0;
 error:
 	if (list_elem)
@@ -927,6 +925,24 @@ mlx5_vdpa_release_mr(struct vdpa_priv *priv)
 }
 
 static int
+mlx5_vdpa_create_tis(struct vdpa_priv *priv)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_tis_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_tis_out)] = {0};
+
+	MLX5_SET(create_tis_in, in, opcode, MLX5_CMD_OP_CREATE_TIS);
+	priv->tis.obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+						      out, sizeof(out));
+	if (!priv->tis.obj) {
+		DRV_LOG(ERR, "Can't create TIS error %s",
+			strerror(errno));
+		return -1;
+	}
+	priv->tis.id = MLX5_GET(create_tis_out, out, tisn);
+	return 0;
+}
+
+static int
 mlx5_vdpa_dev_config(int vid)
 {
 	int did;
@@ -943,6 +959,10 @@ mlx5_vdpa_dev_config(int vid)
 	priv->vid = vid;
 	if (create_pd(priv)) {
 		DRV_LOG(ERR, "Error allocating PD");
+		return -1;
+	}
+	if (mlx5_vdpa_create_tis(priv)) {
+		DRV_LOG(ERR, "Error creating TIS");
 		return -1;
 	}
 	if (mlx5_vdpa_dma_map(priv)) {
@@ -1000,8 +1020,12 @@ mlx5_vdpa_dev_close(int vid)
 		DRV_LOG(ERR, "Error in unmapping MRs");
 		return -1;
 	}
-	if (mlx5_glue->dv_devx_obj_destroy(priv->pd_obj)) {
-		DRV_LOG(ERR, "Error when DEALLOCATING PD");
+	if (mlx5_glue->dv_devx_obj_destroy(priv->pd.obj)) {
+		DRV_LOG(ERR, "Error when deallocating PD");
+		return -1;
+	}
+	if (mlx5_glue->dv_devx_obj_destroy(priv->tis.obj)) {
+		DRV_LOG(ERR, "Error when deallocating TIS");
 		return -1;
 	}
 	rte_atomic32_set(&priv->dev_attached, 0);

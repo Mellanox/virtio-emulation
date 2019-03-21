@@ -982,6 +982,7 @@ enum {
 	MLX5_CMD_OP_CREATE_MKEY            = 0x200,
 	MLX5_CMD_OP_ALLOC_PD               = 0x800,
 	MLX5_CMD_OP_CREATE_TIR             = 0x900,
+	MLX5_CMD_OP_CREATE_TIS             = 0x912,
 	MLX5_CMD_OP_CREATE_GENERAL_OBJECT  = 0xa00,
 	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT  = 0xa01,
 	MLX5_CMD_OP_QUERY_GENERAL_OBJECT   = 0xa02,
@@ -1200,4 +1201,36 @@ struct mlx5_ifc_query_virtio_net_emulation_info_out_bits {
 	u8         reserved_at_100[0x160];
 };
 
+struct mlx5_ifc_tisc_bits {
+	u8         strict_lag_tx_port_affinity[0x1];
+	u8         reserved_at_1[0x3];
+	u8         lag_tx_port_affinity[0x04];
+	u8         reserved_at_8[0x4];
+	u8         prio[0x4];
+	u8         reserved_at_10[0x10];
+	u8         reserved_at_20[0x100];
+	u8         reserved_at_120[0x8];
+	u8         transport_domain[0x18];
+	u8         reserved_at_140[0x8];
+	u8         underlay_qpn[0x18];
+	u8         reserved_at_160[0x3a0];
+};
+
+struct mlx5_ifc_create_tis_out_bits {
+	u8         status[0x8];
+	u8         reserved_at_8[0x18];
+	u8         syndrome[0x20];
+	u8         reserved_at_40[0x8];
+	u8         tisn[0x18];
+	u8         reserved_at_60[0x20];
+};
+
+struct mlx5_ifc_create_tis_in_bits {
+	u8         opcode[0x10];
+	u8         reserved_at_10[0x10];
+	u8         reserved_at_20[0x10];
+	u8         op_mod[0x10];
+	u8         reserved_at_40[0xc0];
+	struct mlx5_ifc_tisc_bits ctx;
+};
 #endif /* RTE_PMD_MLX5_PRM_H_ */
