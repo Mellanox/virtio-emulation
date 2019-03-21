@@ -265,12 +265,11 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_type, MLX5_OBJ_TYPE_VIRTQ);
 	virtq = MLX5_ADDR_OF(create_virtq_in, in, virtq);
 	if (is_virtq_recvq(index, priv->nr_vring)) {
-		MLX5_SET(virtq, virtq, queue_type,
+		MLX5_SET(virtq, virtq, virtio_direction,
 			 MLX5_VIRTQ_OBJ_QUEUE_TYPE_RX);
 	} else {
-		MLX5_SET(virtq, virtq, queue_type,
-			  MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX);
-		/* TODO(liel): Please assign here the SQN to qnum */
+		MLX5_SET(virtq, virtq, virtio_direction,
+			 MLX5_VIRTQ_OBJ_QUEUE_TYPE_TX);
 	}
 	gpa = hva_to_gpa(priv->vid, (uint64_t)(uintptr_t)vq->desc);
 	if (!gpa) {
@@ -290,7 +289,7 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 		return -1;
 	}
 	MLX5_SET64(virtq, virtq, available_addr, gpa);
-	MLX5_SET(virtq, virtq, queue_size, vq->size);
+	MLX5_SET16(virtq, virtq, queue_size, vq->size);
 	MLX5_SET(virtq, virtq, data_mkey, priv->gpa_mkey_index);
 	/*
 	 * For now we use the same gpa mkey for both ctrl and data
@@ -963,7 +962,6 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 {
 	uint32_t in[MLX5_ST_SZ_DW(query_hca_cap_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(query_hca_cap_out)] = {0};
-	void *virtio_net_cap = NULL;
 	void *cap = NULL;
 	struct mlx5dv_context dev_attr;
 
@@ -997,10 +995,9 @@ mlx5_vdpa_query_virtio_caps(struct vdpa_priv *priv)
 			DRV_LOG(DEBUG, "Failed to Query Emulation CAP section");
 			return -1;
 		}
-		virtio_net_cap = MLX5_ADDR_OF(device_emulation, cap, virtnet);
 		priv->caps.max_num_virtqs = MLX5_GET(virtio_net_cap,
-						     virtio_net_cap,
-						     max_num_of_virtqs);
+						     cap,
+						     max_num_virtio_queues);
 	} else {
 		DRV_LOG(DEBUG, "Virtio acceleration not supported by the device");
 		priv->caps.max_num_virtqs = MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED;
