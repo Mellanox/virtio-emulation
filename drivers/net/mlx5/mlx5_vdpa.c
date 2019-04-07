@@ -1162,7 +1162,6 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct ibv_context *ctx;
 	int ret;
 
-	assert(pci_drv == &mlx5_vdpa_driver);
 	errno = 0;
 	ibv_list = mlx5_glue->get_device_list(&ret);
 	if (!ibv_list) {

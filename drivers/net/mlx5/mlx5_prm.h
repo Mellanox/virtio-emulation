@@ -1179,7 +1179,7 @@ struct mlx5_ifc_create_mkey_in_bits {
 	u8         mkey_umem_id[0x20];
 	u8         mkey_umem_offset[0x40];
 	u8         reserved_at_380[0x500];
-	struct mlx5_ifc_klm_bits klm_pas_mtt[0];
+	struct mlx5_ifc_klm_bits klm_pas_mtt[];
 };
 
 struct mlx5_ifc_query_virtio_net_emulation_info_in_bits {
