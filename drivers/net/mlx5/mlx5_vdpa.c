@@ -774,6 +774,38 @@ mlx5_vdpa_setup_notify_relay(struct vdpa_priv *priv)
 	}
 	return 0;
 }
+
+static int
+mlx5_vdpa_release_mr(struct vdpa_priv *priv)
+{
+	struct mlx5_vdpa_query_mr_list *entry;
+	struct mlx5_vdpa_query_mr_list *next;
+
+	entry = SLIST_FIRST(&priv->mr_list);
+	while (entry) {
+		next = SLIST_NEXT(entry, next);
+		if (mlx5_glue->
+			dv_devx_obj_destroy(entry->vdpa_query_mr->mkey->obj)) {
+			DRV_LOG(ERR, "Error when destroying Mkey object");
+			return -1;
+		}
+		rte_free(entry->vdpa_query_mr->mkey);
+		if (!entry->vdpa_query_mr->is_indirect) {
+			if (mlx5_glue->
+				dv_devx_umem_dereg(entry->vdpa_query_mr->umem)) {
+				DRV_LOG(ERR, "Error when deregistering Umem");
+				return -1;
+			}
+		}
+		SLIST_REMOVE(&priv->mr_list, entry, mlx5_vdpa_query_mr_list,
+			     next);
+		rte_free(entry->vdpa_query_mr);
+		rte_free(entry);
+		entry = next;
+	};
+	return 0;
+}
+
 static int
 mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 {
@@ -790,6 +822,9 @@ mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 	uint64_t min_size = klm_size;
 	uint64_t mem_size;
 
+	if (!SLIST_EMPTY(&priv->mr_list))
+		mlx5_vdpa_release_mr(priv);
+	SLIST_INIT(&priv->mr_list);
 	ret = rte_vhost_get_mem_table(priv->id, &mem);
 	if (ret < 0) {
 		DRV_LOG(ERR, "failed to get VM memory layout.");
@@ -894,35 +929,6 @@ error:
 	if (entry)
 		free(entry);
 	return -1;
-}
-
-static int
-mlx5_vdpa_release_mr(struct vdpa_priv *priv)
-{
-	struct mlx5_vdpa_query_mr_list *entry;
-	struct mlx5_vdpa_query_mr_list *next;
-
-	entry = SLIST_FIRST(&priv->mr_list);
-	while (entry) {
-		next = SLIST_NEXT(entry, next);
-		if (mlx5_glue->
-			dv_devx_obj_destroy(entry->vdpa_query_mr->mkey->obj)) {
-			DRV_LOG(ERR, "Error when destroying Mkey object");
-			return -1;
-		}
-		rte_free(entry->vdpa_query_mr->mkey);
-		if (!entry->vdpa_query_mr->is_indirect) {
-			if (mlx5_glue->
-				dv_devx_umem_dereg(entry->vdpa_query_mr->umem)) {
-				DRV_LOG(ERR, "Error when deregistering Umem");
-				return -1;
-			}
-		}
-		rte_free(entry->vdpa_query_mr);
-		rte_free(entry);
-		entry = next;
-	};
-	return 0;
 }
 
 static int
