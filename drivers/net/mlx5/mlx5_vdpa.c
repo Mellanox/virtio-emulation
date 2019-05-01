@@ -287,7 +287,7 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	umem_size = mlx5_vdpa_query_virtq_umem(priv, vq);
 	if (umem_size <= 0)
 		goto error;
-	info->umem_buf = rte_malloc(__func__, umem_size, 0);
+	info->umem_buf = rte_malloc(__func__, umem_size, 4096);
 	if (!info->umem_buf) {
 		DRV_LOG(ERR, "Error allocating memory for Virt queue");
 		goto error;
@@ -341,6 +341,7 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	MLX5_SET(virtq, virtq, ctrl_mkey, priv->gpa_mkey_index);
 	MLX5_SET(virtq, virtq, umem_id, info->umem_obj->umem_id);
 	MLX5_SET(virtq, virtq, tisn, priv->tis.id);
+	MLX5_SET(virtq, virtq, doorbell_stride_idx, index);
 	virtq_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 						  out, sizeof(out));
 	if (!virtq_obj) {
@@ -893,7 +894,7 @@ mlx5_vdpa_dma_map(struct vdpa_priv *priv)
 		}
 		for (uint64_t k = 0; k < reg->size; k += klm_size) {
 			klm_array[klm_index].byte_count = 0;
-			klm_array[klm_index].mkey = (uint64_t)entry->mkey;
+			klm_array[klm_index].mkey = entry->mkey->id;
 			klm_array[klm_index].address = reg->guest_phys_addr + k;
 			klm_index++;
 		}
@@ -1027,14 +1028,16 @@ mlx5_vdpa_dev_close(int vid)
 		DRV_LOG(ERR, "Error in unmapping MRs");
 		return -1;
 	}
-	if (mlx5_glue->dv_devx_obj_destroy(priv->pd.obj)) {
+	if (priv->pd.obj && mlx5_glue->dv_devx_obj_destroy(priv->pd.obj)) {
 		DRV_LOG(ERR, "Error when deallocating PD");
 		return -1;
 	}
-	if (mlx5_glue->dv_devx_obj_destroy(priv->tis.obj)) {
+	priv->pd.obj = NULL;
+	if (priv->tis.obj && mlx5_glue->dv_devx_obj_destroy(priv->tis.obj)) {
 		DRV_LOG(ERR, "Error when deallocating TIS");
 		return -1;
 	}
+	priv->tis.obj = NULL;
 	rte_atomic32_set(&priv->dev_attached, 0);
 	return 0;
 }
