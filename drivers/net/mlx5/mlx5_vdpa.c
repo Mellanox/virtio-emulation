@@ -51,6 +51,19 @@
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
 
+uint8_t mlx5_vdpa_rss_hash_default_key[] = {
+	0x2c, 0xc6, 0x81, 0xd1,
+	0x5b, 0xdb, 0xf4, 0xf7,
+	0xfc, 0xa2, 0x83, 0x19,
+	0xdb, 0x1a, 0x3e, 0x94,
+	0x6b, 0x9e, 0x38, 0xd9,
+	0x2c, 0x9c, 0x03, 0xd1,
+	0xad, 0x99, 0x44, 0xa7,
+	0xd9, 0x56, 0x3d, 0x59,
+	0x06, 0x3c, 0x25, 0xf3,
+	0xfc, 0x1f, 0xdc, 0x2a,
+};
+
 struct mlx5_vdpa_caps {
 	uint32_t dump_mkey;
 	uint16_t max_num_virtqs;
@@ -72,6 +85,7 @@ struct mlx5_vdpa_devx_obj {
 
 struct mlx5_vdpa_steer_info {
 	struct mlx5_vdpa_devx_obj tir;
+	struct mlx5_vdpa_devx_obj rqt;
 	struct ibv_flow        *promisc_flow;
 	struct mlx5dv_flow_matcher *matcher;
 };
@@ -170,18 +184,70 @@ static bool is_virtq_recvq(int virtq_index, int nr_vring)
 	return false;
 }
 
+static int create_rqt(struct vdpa_priv *priv)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_rqt_in) +
+		    (MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED *
+		     MLX5_ST_SZ_DW(rq_num))] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_rqt_out)] = {0};
+	struct mlx5dv_devx_obj *rqt_obj = NULL;
+	void *rqtc = NULL;
+	int i;
+	int j = 0;
+
+	MLX5_SET(create_rqt_in, in, opcode, MLX5_CMD_OP_CREATE_RQT);
+	rqtc = MLX5_ADDR_OF(create_rqt_in, in, rqt_context);
+	MLX5_SET(rqtc, rqtc, list_q_type, MLX5_INLINE_Q_TYPE_VIRTQ);
+	MLX5_SET(rqtc, rqtc, rqt_max_size, MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED);
+	for (i = 0; i < priv->nr_vring; i++) {
+		if (is_virtq_recvq(i, priv->nr_vring)) {
+			MLX5_SET(rqtc, rqtc, rq_num[j],
+				 priv->virtq[i].virtq_id);
+			j++;
+		}
+	}
+	MLX5_SET(rqtc, rqtc, rqt_actual_size, j);
+	rqt_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
+						out, sizeof(out));
+	if (!rqt_obj) {
+		DRV_LOG(DEBUG, "Failed to create RQT");
+		return -1;
+	}
+	priv->rx_steer_info.rqt.id = MLX5_GET(create_tir_out, out, tirn);
+	priv->rx_steer_info.rqt.obj = rqt_obj;
+	DRV_LOG(DEBUG, "Success creating RQT 0x%x",
+		priv->rx_steer_info.rqt.id);
+	return 0;
+}
+
+#define MLX5_HASH_IP_L4PORTS (MLX5_HASH_FIELD_SEL_SRC_IP   |\
+			      MLX5_HASH_FIELD_SEL_DST_IP   |\
+			      MLX5_HASH_FIELD_SEL_L4_SPORT |\
+			      MLX5_HASH_FIELD_SEL_L4_DPORT)
+
 static int create_tir(struct vdpa_priv *priv)
 {
 	uint32_t in[MLX5_ST_SZ_DW(create_tir_in)] = {0};
 	uint32_t out[MLX5_ST_SZ_DW(create_tir_out)] = {0};
 	struct mlx5dv_devx_obj *tir_obj = NULL;
+	void *rss_key = NULL;
 	void *tirc = NULL;
+	void *hfso = NULL;
+	size_t len;
 
 	MLX5_SET(create_tir_in, in, opcode, MLX5_CMD_OP_CREATE_TIR);
 	tirc = MLX5_ADDR_OF(create_tir_in, in, ctx);
-	MLX5_SET(tirc, tirc, disp_type, MLX5_TIRC_DISP_TYPE_DIRECT);
-	MLX5_SET(tirc, tirc, inline_rqn, priv->virtq[0].virtq_id);
-	MLX5_SET(tirc, tirc, rx_hash_fn, MLX5_RX_HASH_FN_NONE);
+	MLX5_SET(tirc, tirc, disp_type, MLX5_TIRC_DISP_TYPE_INDIRECT);
+	MLX5_SET(tirc, tirc, indirect_table, priv->rx_steer_info.rqt.id);
+	MLX5_SET(tirc, tirc, rx_hash_fn, MLX5_RX_HASH_FN_TOEPLITZ);
+	rss_key = MLX5_ADDR_OF(tirc, tirc, rx_hash_toeplitz_key);
+	len = MLX5_FLD_SZ_BYTES(tirc, rx_hash_toeplitz_key);
+	MLX5_SET(tirc, tirc, rx_hash_symmetric, 1);
+	memcpy(rss_key, mlx5_vdpa_rss_hash_default_key, len);
+	hfso = MLX5_ADDR_OF(tirc, tirc, rx_hash_field_selector_outer);
+	MLX5_SET(rx_hash_field_select, hfso, l3_prot_type, MLX5_L3_PROT_TYPE_IPV4);
+	MLX5_SET(rx_hash_field_select, hfso, l4_prot_type, MLX5_L4_PROT_TYPE_UDP);
+	MLX5_SET(rx_hash_field_select, hfso, selected_fields, MLX5_HASH_IP_L4PORTS);
 	tir_obj = mlx5_glue->dv_devx_obj_create(priv->ctx, in, sizeof(in),
 						out, sizeof(out));
 	if (!tir_obj) {
@@ -371,6 +437,11 @@ error:
 
 static int mlx5_vdpa_setup_rx_steering(struct vdpa_priv *priv)
 {
+	if (create_rqt(priv)) {
+		DRV_LOG(ERR, "Create Indirection table failed");
+		return -1;
+	}
+
 	if (create_tir(priv)) {
 		DRV_LOG(ERR, "Create TIR failed");
 		return -1;
@@ -386,6 +457,7 @@ static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 {
 	struct mlx5dv_flow_matcher *matcher;
 	struct mlx5dv_devx_obj *tir;
+	struct mlx5dv_devx_obj *rqt;
 	struct ibv_flow *flow;
 
 	flow = priv->rx_steer_info.promisc_flow;
@@ -407,6 +479,13 @@ static int mlx5_vdpa_release_rx_steer(struct vdpa_priv *priv)
 	}
 	priv->rx_steer_info.tir.obj = NULL;
 	priv->rx_steer_info.tir.id = 0;
+	rqt = priv->rx_steer_info.rqt.obj;
+	if (rqt && mlx5_glue->dv_devx_obj_destroy(rqt)) {
+		DRV_LOG(ERR, "Error Destroying RQT");
+		return -1;
+	}
+	priv->rx_steer_info.rqt.obj = NULL;
+	priv->rx_steer_info.rqt.id = 0;
 	return 0;
 }
 
