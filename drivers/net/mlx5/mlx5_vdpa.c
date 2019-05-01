@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/epoll.h>
+#include <linux/virtio_net.h>
 
 #include <unistd.h>
 #include <dlfcn.h>
@@ -29,17 +30,23 @@
 
 #define MKEY_VARIANT_PART 0x50
 
-/** Driver Static values in the absence of device VIRTIO emulation support */
-#define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 1
+/*
+ * Driver Static values in the absence of device VIRTIO emulation support
+ * TODO(idos): Remove this when query virtio_net capabilities is supported
+ * Please keep this a power of 2 value.
+ */
+#define MLX5_VDPA_SW_MAX_VIRTQS_SUPPORTED 16
 
 #define MLX5_VDPA_FEATURES ((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
 			    (1ULL << VIRTIO_F_VERSION_1) | \
-			    (1ULL << VIRTIO_F_ANY_LAYOUT))
+			    (1ULL << VIRTIO_F_ANY_LAYOUT) | \
+			    (1ULL << VIRTIO_NET_F_MQ ))
 
 #define MLX5_VDPA_PROTOCOL_FEATURES \
 			    ((1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
 			     (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
-			     (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER))
+			     (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
+			     (1ULL << VHOST_USER_PROTOCOL_F_MQ))
 
 /** Driver-specific log messages type. */
 int mlx5_vdpa_logtype;
@@ -409,8 +416,6 @@ static int mlx5_vdpa_setup_virtqs(struct vdpa_priv *priv)
 	struct rte_vhost_vring vq;
 
 	nr_vring = rte_vhost_get_vring_num(priv->vid);
-	/* TODO(idos): Remove when have MQ support */
-	assert(nr_vring == 2);
 	priv->nr_vring = nr_vring;
 	for (i = 0; i < nr_vring; i++) {
 		rte_vhost_get_vhost_vring(priv->vid, i, &vq);
