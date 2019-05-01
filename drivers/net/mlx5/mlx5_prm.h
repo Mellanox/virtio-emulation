@@ -886,7 +886,8 @@ struct mlx5_ifc_tirc_bits {
 	u8 lro_timeout_period_usecs[0x10];
 	u8 lro_enable_mask[0x4];
 	u8 lro_max_ip_payload_size[0x8];
-	u8 reserved_at_a0[0x48];
+	u8 reserved_at_a0[0x45];
+	u8 inline_q_type[0x3];
 	u8 inline_rqn[0x18];
 	u8 rx_hash_symmetric[0x1];
 	u8 reserved_at_101[0x1];
@@ -917,6 +918,39 @@ struct mlx5_ifc_create_tir_out_bits {
 	u8 syndrome[0x20];
 	u8 reserved_at_40[0x8];
 	u8 tirn[0x18];
+	u8 reserved_at_60[0x20];
+};
+
+struct mlx5_ifc_rq_num_bits {
+	u8 reserved_at_0[0x8];
+	u8 rq_num[0x18];
+};
+
+struct mlx5_ifc_rqtc_bits {
+	u8 reserved_at_0[0xa5];
+	u8 list_q_type[0x3];
+	u8 reserved_at_a8[0x8];
+	u8 rqt_max_size[0x10];
+	u8 reserved_at_c0[0x10];
+	u8 rqt_actual_size[0x10];
+	u8 reserved_at_e0[0x6a0];
+	struct mlx5_ifc_rq_num_bits rq_num[0];
+};
+
+struct mlx5_ifc_create_rqt_in_bits {
+	u8 opcode[0x10];
+	u8 reserved_at_10[0x20];
+	u8 op_mod[0x10];
+	u8 reserved_at_40[0xc0];
+	struct mlx5_ifc_rqtc_bits rqt_context;
+};
+
+struct mlx5_ifc_create_rqt_out_bits {
+	u8 status[0x8];
+	u8 reserved_at_8[0x18];
+	u8 syndrome[0x20];
+	u8 reserved_at_40[0x8];
+	u8 rqtn[0x18];
 	u8 reserved_at_60[0x20];
 };
 
@@ -983,6 +1017,7 @@ enum {
 	MLX5_CMD_OP_ALLOC_PD               = 0x800,
 	MLX5_CMD_OP_CREATE_TIR             = 0x900,
 	MLX5_CMD_OP_CREATE_TIS             = 0x912,
+	MLX5_CMD_OP_CREATE_RQT             = 0x916,
 	MLX5_CMD_OP_CREATE_GENERAL_OBJECT  = 0xa00,
 	MLX5_CMD_OP_MODIFY_GENERAL_OBJECT  = 0xa01,
 	MLX5_CMD_OP_QUERY_GENERAL_OBJECT   = 0xa02,
@@ -1018,9 +1053,32 @@ enum {
 };
 
 enum {
+	MLX5_INLINE_Q_TYPE_RQ    = 0x0,
+	MLX5_INLINE_Q_TYPE_VIRTQ = 0x1,
+};
+
+enum {
 	MLX5_RX_HASH_FN_NONE           = 0x0,
 	MLX5_RX_HASH_FN_INVERTED_XOR8  = 0x1,
 	MLX5_RX_HASH_FN_TOEPLITZ       = 0x2,
+};
+
+enum {
+	MLX5_L3_PROT_TYPE_IPV4          = 0,
+	MLX5_L3_PROT_TYPE_IPV6          = 1,
+};
+
+enum {
+	MLX5_L4_PROT_TYPE_TCP           = 0,
+	MLX5_L4_PROT_TYPE_UDP           = 1,
+};
+
+enum {
+	MLX5_HASH_FIELD_SEL_SRC_IP	= 1 << 0,
+	MLX5_HASH_FIELD_SEL_DST_IP	= 1 << 1,
+	MLX5_HASH_FIELD_SEL_L4_SPORT	= 1 << 2,
+	MLX5_HASH_FIELD_SEL_L4_DPORT	= 1 << 3,
+	MLX5_HASH_FIELD_SEL_IPSEC_SPI	= 1 << 4,
 };
 
 /* CQE format mask. */
