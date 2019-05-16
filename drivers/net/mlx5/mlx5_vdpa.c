@@ -22,6 +22,13 @@
 #include "mlx5_prm.h"
 #include "mlx5_flow.h"
 
+/*
+ * TODO: check if allready exists on latest upstream and if so remove.
+ */
+#ifndef VIRTIO_F_ORDER_PLATFORM
+#define VIRTIO_F_ORDER_PLATFORM 36
+#endif
+
 #ifndef NOMINMAX
 #ifndef max
 #define max(a, b)            (((a) > (b)) ? (a) : (b))
@@ -40,7 +47,8 @@
 #define MLX5_VDPA_FEATURES ((1ULL << VHOST_USER_F_PROTOCOL_FEATURES) | \
 			    (1ULL << VIRTIO_F_VERSION_1) | \
 			    (1ULL << VIRTIO_F_ANY_LAYOUT) | \
-			    (1ULL << VIRTIO_NET_F_MQ ))
+			    (1ULL << VIRTIO_NET_F_MQ ) | \
+			    (1ULL << VIRTIO_F_ORDER_PLATFORM))
 
 #define MLX5_VDPA_PROTOCOL_FEATURES \
 			    ((1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
