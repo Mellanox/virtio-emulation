@@ -329,27 +329,7 @@ exit:
 	return gpa;
 }
 
-static int
-mlx5_vdpa_query_virtq_umem(struct vdpa_priv *priv,
-			   struct rte_vhost_vring *vq)
-{
-	uint32_t in[MLX5_ST_SZ_DW(query_virtio_net_emulation_info_in)] = {0};
-	uint32_t out[MLX5_ST_SZ_DW(query_virtio_net_emulation_info_out)] = {0};
-	int umem_size;
-
-	MLX5_SET(query_virtio_net_emulation_info_in, in, opcode,
-		 MLX5_CMD_OP_QUERY_VIRTIO_NET_EMULATION_INFO);
-	MLX5_SET(query_virtio_net_emulation_info_in, in, virtio_net_q_size,
-		 vq->size);
-	if (mlx5_glue->dv_devx_general_cmd(priv->ctx, in, sizeof(in),
-					   out, sizeof(out))) {
-		DRV_LOG(DEBUG, "Failed to Query Virtio Net emulation info");
-		return -1;
-	}
-	umem_size = MLX5_GET(query_virtio_net_emulation_info_out, out,
-			     umem_size);
-	return umem_size;
-}
+#define MLX5_VDPA_VIRTIO_NET_Q_UMEM_SIZE (128 * 1024)
 
 static int
 create_split_virtq(struct vdpa_priv *priv, int index,
@@ -365,9 +345,7 @@ create_split_virtq(struct vdpa_priv *priv, int index,
 	int umem_size;
 
 	/* Setup UMEM for this virt queue. */
-	umem_size = mlx5_vdpa_query_virtq_umem(priv, vq);
-	if (umem_size <= 0)
-		goto error;
+	umem_size = MLX5_VDPA_VIRTIO_NET_Q_UMEM_SIZE;
 	info->umem_buf = rte_malloc(__func__, umem_size, 4096);
 	if (!info->umem_buf) {
 		DRV_LOG(ERR, "Error allocating memory for Virt queue");
