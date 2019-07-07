@@ -1211,7 +1211,7 @@ static struct rte_vdpa_dev_ops mlx5_vdpa_ops = {
 	.migration_done = NULL,
 	.get_vfio_group_fd = NULL,
 	.get_vfio_device_fd = mlx5_vdpa_get_device_fd,
-	.get_notify_area = mlx5_vdpa_report_notify_area,
+	.get_notify_area = NULL,
 };
 
 /**
